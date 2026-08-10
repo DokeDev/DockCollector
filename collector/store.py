@@ -85,11 +85,15 @@ class Store:
             return self.db.execute("SELECT 1 FROM results WHERE target_id=? AND url=?",
                                    (target_id, url)).fetchone() is not None
 
-    def results(self, target_id, limit=1000):
+    def results(self, target_id, limit=1000, offset=0):
         with self.lock:
-            rows = self.db.execute("SELECT * FROM results WHERE target_id=? ORDER BY id DESC LIMIT ?",
-                                   (target_id, limit)).fetchall()
+            rows = self.db.execute("SELECT * FROM results WHERE target_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                                   (target_id, limit, offset)).fetchall()
             return [dict(r) | {"data": json.loads(r["data_json"])} for r in rows]
+
+    def result_count(self, target_id):
+        with self.lock:
+            return self.db.execute("SELECT COUNT(*) FROM results WHERE target_id=?", (target_id,)).fetchone()[0]
 
     def clear_results(self, target_id):
         with self.lock:

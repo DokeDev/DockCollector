@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .rules import account_profile_id, default_rule
+from .challenge_signals import CHALLENGE_TEXTS
 from .picker import PickerManager
 from .login import LoginManager
 from .runner import RunnerManager
@@ -76,8 +77,12 @@ def normalize_browser_configs():
 def normalize_list_configs():
     for target in store.targets():
         listing = target["rule"].setdefault("list", {})
-        if "time_selector" not in listing:
-            listing["time_selector"] = ""
+        changed = False
+        for key, value in {"time_selector": "", "exclude_texts": [],
+                           "pagination_mode": "next"}.items():
+            if key not in listing:
+                listing[key], changed = copy.deepcopy(value), True
+        if changed:
             store.save_target(target["id"], target)
 
 
@@ -114,6 +119,10 @@ def normalize_captcha_configs():
         changed = False
         for key, value in defaults.items():
             if key not in captcha: captcha[key], changed = value, True
+        # 旧版本曾把内置文案写进每个目标；现在从目标配置中移除，避免界面重复展示。
+        custom_texts = [text for text in captcha.get("texts", []) if text not in CHALLENGE_TEXTS]
+        if custom_texts != captcha.get("texts", []):
+            captcha["texts"], changed = custom_texts, True
         if changed: store.save_target(target["id"], target)
 
 
@@ -208,7 +217,13 @@ def source_accounts(target_id: str):
 def status(target_id: str): return manager.status(target_id)
 
 @app.get("/api/targets/{target_id}/results")
-def results(target_id: str): return store.results(target_id)
+def results(target_id: str, page: int = 1, page_size: int = 20):
+    page, page_size = max(1, page), min(100, max(5, page_size))
+    total = store.result_count(target_id)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    return {"rows": store.results(target_id, page_size, (page - 1) * page_size),
+            "total": total, "page": page, "page_size": page_size, "pages": pages}
 
 @app.delete("/api/targets/{target_id}/results")
 def clear_results(target_id: str): return {"ok": True, "deleted": store.clear_results(target_id)}
@@ -250,10 +265,10 @@ def export(target_id: str):
     for r in rows:
         for key in r["data"]:
             if key not in data_fields and key != "原始链接": data_fields.append(key)
-    fields = ["版块","列表时间",*data_fields,"链接","采集时间"]
+    fields = ["数据列表","列表时间",*data_fields,"链接","采集时间"]
     out = io.StringIO(); w = csv.DictWriter(out, fieldnames=fields); w.writeheader()
     for r in reversed(rows):
-        row = {"版块":r["board_name"],"列表时间":r["list_time"],"链接":r["url"],"采集时间":r["collected_at"]}
+        row = {"数据列表":r["board_name"],"列表时间":r["list_time"],"链接":r["url"],"采集时间":r["collected_at"]}
         row.update({k:v for k,v in r["data"].items() if k in data_fields}); w.writerow(row)
     return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{target_id}.csv"'})

@@ -13,6 +13,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 from .captcha_solver import get_captcha_solver, png_width
+from .challenge_signals import CHALLENGE_SELECTORS, CHALLENGE_TEXTS, LOGIN_TEXTS
 from .rules import account_profile_id, parse_detail_html
 
 
@@ -57,6 +58,7 @@ class TargetRunner:
                        "opened": 0, "saved": 0, "skipped": 0, "errors": 0,
                        "captcha": 0, "message": "正在启动"}
         self.thread = None
+        self.detail_baseline = []
 
     def start(self):
         self.thread = threading.Thread(target=lambda: asyncio.run(self.run()), daemon=True)
@@ -109,11 +111,117 @@ class TargetRunner:
             self.stop_flag.set()
         return True
 
-    async def captcha_present(self, page, cfg):
-        body = await page.locator("body").inner_text(timeout=5000)
-        if any(x and x in body for x in cfg.get("texts", [])):
+    async def detail_structure_present(self, page, rule):
+        fields = rule.get("fields", [])
+        if not fields:
             return True
-        for sel in cfg.get("selectors", []):
+        body_text = None
+        for field in fields:
+            kind = field.get("kind", "css")
+            selector = (field.get("selector") if kind in {"css", "body_after_fields"}
+                        else field.get("root") if kind == "discuz_showhide" else "")
+            if selector:
+                try:
+                    if await page.locator(selector).count():
+                        return True
+                except Exception:
+                    pass
+            label = field.get("label")
+            if label:
+                body_text = body_text if body_text is not None else await page.locator("body").inner_text()
+                if label in body_text:
+                    return True
+        return False
+
+    async def ensure_detail_structure(self, page, rule):
+        assessment = await self.assess_detail_page(page, rule)
+        if assessment["classification"] == "normal":
+            self.detail_baseline.append(assessment["fingerprint"])
+            self.detail_baseline = self.detail_baseline[-20:]
+            return True
+        # 动态验证组件可能稍晚出现；稳定后复核一次。
+        await page.wait_for_timeout(1200)
+        assessment = await self.assess_detail_page(page, rule)
+        if assessment["classification"] not in {"challenge", "login"}:
+            reasons = "、".join(assessment["reasons"])
+            self.store.event(self.target_id, "warning",
+                             f"详情页异常（评分 {assessment['score']}），已跳过且未保存：{reasons}；{page.url}")
+            self.status["skipped"] += 1
+            return False
+        if rule.get("browser", {}).get("mode") == "silent":
+            self.stop_flag.set()
+            self.status["message"] = "验证页未恢复，静默模式无法人工处理"
+            return False
+        await self.set_operation_lock(page, False)
+        message = ("检测到登录状态失效，请在浏览器中重新登录" if assessment["classification"] == "login"
+                   else "验证后详情结构仍未恢复，请在浏览器中完成人机验证")
+        self.pause(message)
+        while not self.stop_flag.is_set():
+            await asyncio.sleep(2)
+            if await self.detail_structure_present(page, rule):
+                await self.set_operation_lock(page, True)
+                self.resume()
+                return True
+        return False
+
+    async def assess_detail_page(self, page, rule):
+        """用正常结构、历史正常页和验证信号进行异常评分。"""
+        try:
+            body = await page.locator("body").inner_text(timeout=5000)
+            title = await page.title()
+        except Exception:
+            body, title = "", ""
+        folded = body.casefold()
+        custom_texts = tuple(rule.get("captcha", {}).get("texts", []))
+        challenge_texts = list(dict.fromkeys(
+            x for x in (*CHALLENGE_TEXTS, *custom_texts) if x and x.casefold() in folded))
+        selectors = tuple(dict.fromkeys((*CHALLENGE_SELECTORS,
+                                         *rule.get("captcha", {}).get("selectors", []))))
+        challenge_nodes = await self._visible_selector_count(page, selectors)
+        normal_selectors = self._normal_page_selectors(rule)
+        normal_count = await self._visible_selector_count(page, normal_selectors)
+        structure = await self.detail_structure_present(page, rule)
+        length = len(body.strip())
+        score, reasons = 0, []
+        if not structure:
+            score += 5; reasons.append("目标字段结构不存在")
+        if normal_selectors and not normal_count:
+            score += 3; reasons.append("正常页面选择器全部缺失")
+        if challenge_nodes:
+            score += 6; reasons.append(f"发现验证组件 {challenge_nodes} 项")
+        if challenge_texts:
+            score += min(6, 2 + len(challenge_texts)); reasons.append("验证文案：" + "、".join(challenge_texts[:3]))
+        login_texts = [x for x in LOGIN_TEXTS if x.casefold() in folded]
+        if login_texts:
+            score += 5; reasons.append("登录提示：" + "、".join(login_texts[:2]))
+        if self.detail_baseline:
+            lengths = sorted(x["body_length"] for x in self.detail_baseline if x["body_length"])
+            median = lengths[len(lengths) // 2] if lengths else 0
+            if median and length < median * .35:
+                score += 3; reasons.append(f"正文长度仅为正常页约 {round(length / median * 100)}%")
+            usual = max(x["normal_count"] for x in self.detail_baseline)
+            if usual and normal_count < usual * .4:
+                score += 3; reasons.append("正常结构命中数显著下降")
+        fingerprint = {"body_length": length, "title_length": len(title),
+                       "normal_count": normal_count, "url": page.url}
+        if login_texts and not structure:
+            classification = "login"
+        elif (challenge_nodes or challenge_texts) and not structure and score >= 7:
+            classification = "challenge"
+        elif structure:
+            classification = "normal"
+        else:
+            classification = "anomaly"
+        return {"score": score, "classification": classification,
+                "reasons": reasons or ["页面结构正常"], "fingerprint": fingerprint}
+
+    async def captcha_present(self, page, cfg):
+        # 部分站点在 DOMContentLoaded 之后才用脚本写入验证区域。
+        await page.wait_for_timeout(800)
+        body = await page.locator("body").inner_text(timeout=5000)
+        if any(x and x.casefold() in body.casefold() for x in (*CHALLENGE_TEXTS, *cfg.get("texts", []))):
+            return True
+        for sel in (*CHALLENGE_SELECTORS, *cfg.get("selectors", [])):
             try:
                 if await page.locator(sel).count(): return True
             except Exception: pass
@@ -499,14 +607,16 @@ class TargetRunner:
     async def collect_board(self, page, board, rule, started):
         url, empty = board["url"], 0
         limits, freq = rule["limits"], rule["frequency"]
+        pagination_mode = rule.get("list", {}).get("pagination_mode", "next")
         for page_no in range(1, int(limits["max_list_pages"]) + 1):
             if self.stop_flag.is_set(): return
             if (time.monotonic() - started) / 60 >= float(limits["max_minutes"]):
                 self.stop_flag.set(); self.status["message"] = "达到最长运行时间"; return
             await self.wait_gate()
             self.status.update(board=board["name"], url=url, message=f"读取列表第 {page_no} 页")
-            await page.goto(url, wait_until="domcontentloaded", timeout=int(freq["timeout_seconds"] * 1000))
-            await self.handle_captcha(page, rule); await self.wait_gate()
+            if page_no == 1 or pagination_mode != "scroll":
+                await page.goto(url, wait_until="domcontentloaded", timeout=int(freq["timeout_seconds"] * 1000))
+                await self.handle_captcha(page, rule); await self.wait_gate()
             page_text = await page.locator("body").inner_text()
             stop_rule = await self.matched_stop_rule(page, None, rule, "list")
             if stop_rule:
@@ -516,6 +626,8 @@ class TargetRunner:
             matched = []
             for i in range(await rows.count()):
                 row = rows.nth(i); text = await row.inner_text()
+                if any(value and value in text for value in rule["list"].get("exclude_texts", [])):
+                    self.status["skipped"] += 1; continue
                 required_text = str(rule["list"].get("required_text", ""))
                 time_selector = str(rule["list"].get("time_selector", "")).strip()
                 if time_selector:
@@ -542,8 +654,22 @@ class TargetRunner:
                 self.status.update(url=detail_url, message=f"采集：{title}")
                 await page.goto(detail_url, wait_until="domcontentloaded", timeout=int(freq["timeout_seconds"] * 1000))
                 await self.handle_captcha(page, rule); await self.wait_gate()
+                if not await self.ensure_detail_structure(page, rule):
+                    if self.stop_flag.is_set(): return
+                    await page.go_back(wait_until="domcontentloaded")
+                    continue
                 self.status["opened"] += 1
                 html = await page.content(); data = parse_detail_html(html, rule, detail_url)
+                excluded = False
+                for field in rule.get("fields", []):
+                    values = field.get("exclude_contains", [])
+                    if isinstance(values, str): values = [values]
+                    if any(value and value in str(data.get(field.get("name", ""), "")) for value in values):
+                        excluded = True; break
+                if excluded:
+                    self.status["skipped"] += 1
+                    await page.go_back(wait_until="domcontentloaded")
+                    continue
                 if self.store.add_result(self.target_id, board["name"], detail_url, title, list_time, data):
                     self.status["saved"] += 1
                 stop_rule = await self.matched_stop_rule(page, data, rule, "detail")
@@ -551,6 +677,13 @@ class TargetRunner:
                     self.stop_by_rule(stop_rule); return
                 await page.go_back(wait_until="domcontentloaded")
             if empty >= int(limits["empty_pages"]): return
+            if pagination_mode == "scroll":
+                before = await page.locator(rule["list"]["row_selector"]).count()
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(float(freq["list_seconds"]))
+                after = await page.locator(rule["list"]["row_selector"]).count()
+                if after <= before: return
+                continue
             nxt = page.locator(rule["list"]["next_selector"]).first
             if not await nxt.count(): return
             url = urljoin(page.url, await nxt.get_attribute("href"))
