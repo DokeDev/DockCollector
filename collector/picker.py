@@ -1,9 +1,13 @@
 import asyncio
+import json
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
+
+from .rules import account_profile_id
+from .runner import TargetRunner
 
 
 PICKER_SCRIPT = r"""
@@ -87,12 +91,13 @@ class PickerManager:
         self.root, self.store = root, store
         self.sessions = {}
 
-    def start(self, target_id, source, mode="detail"):
+    def start(self, target_id, source, mode="detail", board_id=""):
         if target_id in self.sessions and self.sessions[target_id].get("state") == "running":
             return self.sessions[target_id]
-        state = {"state":"starting","source":source,"mode":mode,"selected":None,"message":"正在打开规则拾取器","stop":False}
+        state = {"state":"starting","source":source,"mode":mode,"board_id":board_id,
+                 "selected":None,"message":"正在打开规则拾取器","stop":False}
         self.sessions[target_id] = state
-        threading.Thread(target=lambda: asyncio.run(self._run(target_id, source, mode, state)), daemon=True).start()
+        threading.Thread(target=lambda: asyncio.run(self._run(target_id, source, mode, board_id, state)), daemon=True).start()
         return state
 
     def status(self, target_id):
@@ -114,23 +119,33 @@ class PickerManager:
             state["message"] = f"窗口激活失败：{exc}"
         return state
 
-    async def _run(self, target_id, source, mode, state):
+    async def _run(self, target_id, source, mode, board_id, state):
         if sys.platform != "win32" and os.environ.get("DOCK_USE_VENDOR", "1") != "0":
             sys.path.insert(0, str(self.root / ".vendor"))
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(self.root / ".browsers"))
         from playwright.async_api import async_playwright
         target = self.store.target(target_id); rule = target["rule"]
-        # The picker has its own profile so it cannot be blocked by a running
-        # collector context or a stale singleton lock in the collection profile.
-        profile = self.root / rule["folder"] / "规则拾取器数据"
+        boards = rule.get("boards", [])
+        board = next((x for x in boards if x.get("id") == board_id), None)
+        if board_id == "_shared" and boards:
+            board = next((x for x in boards if x.get("enabled", True)), boards[0])
+        if board_id and board_id != "__picker__" and not board:
+            state.update(state="error", message="选择的登录账号来源不存在"); return
+        profile_id = ("_shared" if board_id == "_shared" else
+                      account_profile_id(rule, board) if board else "")
+        profile = (self.root / rule["folder"] / "浏览器数据" / profile_id
+                   if profile_id else self.root / rule["folder"] / "规则拾取器数据")
         profile.mkdir(parents=True, exist_ok=True)
+        proxy = await TargetRunner(self.root, self.store, target_id).resolve_proxy(
+            board or {}, rule.get("proxy", {})) if board else None
         try:
             async with async_playwright() as pw:
                 state["message"] = "正在启动内置 Chromium"
                 browser = None
                 if mode == "list_auto":
                     browser = await asyncio.wait_for(
-                        pw.chromium.launch(headless=True, args=["--password-store=basic", "--use-mock-keychain"]),
+                        pw.chromium.launch(headless=True, proxy=proxy,
+                                           args=["--password-store=basic", "--use-mock-keychain"]),
                         timeout=15)
                     ctx = await browser.new_context(no_viewport=True)
                 else:
@@ -138,16 +153,24 @@ class PickerManager:
                         ctx = await asyncio.wait_for(
                             pw.chromium.launch_persistent_context(
                                 str(profile), headless=False, no_viewport=True,
+                                proxy=proxy,
                                 args=["--new-window", "--window-position=30,50", "--window-size=1100,700",
                                       "--disable-background-mode"]),
                             timeout=15)
                     except asyncio.TimeoutError:
-                        state["message"] = "资料目录启动超时，正在使用临时窗口重试"
+                        state["message"] = "账号目录启动超时；请先关闭预登录或采集浏览器后重试"
+                        if profile_id:
+                            raise RuntimeError(state["message"])
                         browser = await asyncio.wait_for(
                             pw.chromium.launch(headless=False, args=["--new-window", "--window-position=30,50",
                                                                     "--window-size=1100,700",
                                                                     "--disable-background-mode"]), timeout=15)
                         ctx = await browser.new_context(no_viewport=True)
+                snapshot = profile / "登录状态.json"
+                if snapshot.exists():
+                    saved = json.loads(snapshot.read_text(encoding="utf-8"))
+                    if saved.get("cookies"):
+                        await ctx.add_cookies(saved["cookies"])
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
                 async def picked(_source, value):
                     items = value.get("items") or ([value] if value.get("name") else [])

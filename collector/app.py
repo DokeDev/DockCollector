@@ -194,7 +194,9 @@ def export_rule(target_id: str):
                     headers={"Content-Disposition": f'attachment; filename="{target_id}-rule.json"'})
 
 @app.post("/api/targets/{target_id}/picker/start")
-def picker_start(target_id: str, payload: dict): return picker.start(target_id, payload.get("source", ""), payload.get("mode", "detail"))
+def picker_start(target_id: str, payload: dict):
+    return picker.start(target_id, payload.get("source", ""), payload.get("mode", "detail"),
+                        payload.get("board_id", ""))
 
 @app.get("/api/targets/{target_id}/picker")
 def picker_status(target_id: str): return picker.status(target_id)
