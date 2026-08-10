@@ -1,0 +1,5 @@
+.board { grid-template-columns: 22px 130px minmax(260px, 1fr) 210px 70px; }
+@media (max-width: 900px) {
+  .board { grid-template-columns: 22px 1fr; }
+  .board input, .board button { grid-column: 2; }
+}

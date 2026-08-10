@@ -1,0 +1,203 @@
+import csv
+import copy
+import io
+import json
+import sys
+import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if sys.platform != "win32":
+    sys.path.insert(0, str(ROOT / ".vendor"))
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+
+from .rules import default_rule
+from .picker import PickerManager
+from .login import LoginManager
+from .runner import RunnerManager
+from .store import Store
+
+app = FastAPI(title="Dock采集器")
+store = Store(ROOT / "collector.db")
+
+
+def normalize_rule_names():
+    """JSON object keys must be unique; preserve duplicate rules with suffixes."""
+    for target in store.targets():
+        used, changed = set(), False
+        for field in target["rule"].get("fields", []):
+            base = (field.get("name") or "字段").strip()
+            name, number = base, 2
+            while name in used:
+                name = f"{base}_{number}"; number += 1
+            if field.get("name") != name: field["name"], changed = name, True
+            used.add(name)
+        if changed: store.save_target(target["id"], target)
+
+
+def normalize_picker_sources():
+    """Give every target an independently editable list of picker pages."""
+    for target in store.targets():
+        rule = target["rule"]
+        if "picker_sources" in rule:
+            continue
+        folder = ROOT / rule.get("folder", "")
+        sources = [
+            {"name": f"本地样例：{path.name}", "source": f"sample:{path.name}"}
+            for path in sorted(folder.glob("内容*.html"))
+        ]
+        rule["picker_sources"] = sources
+        store.save_target(target["id"], target)
+
+
+def normalize_proxy_configs():
+    defaults = default_rule("", "", "", "")["proxy"]
+    for target in store.targets():
+        proxy = target["rule"].setdefault("proxy", {})
+        changed = False
+        for key, value in defaults.items():
+            if key not in proxy: proxy[key], changed = value, True
+        if proxy.get("mode") == "direct" and proxy.get("server"):
+            proxy["mode"], changed = "fixed", True
+        if changed: store.save_target(target["id"], target)
+
+
+def normalize_browser_configs():
+    for target in store.targets():
+        if "browser" not in target["rule"]:
+            target["rule"]["browser"] = {"mode": "visible"}
+            store.save_target(target["id"], target)
+
+
+def normalize_captcha_configs():
+    for target in store.targets():
+        captcha = target["rule"].setdefault("captcha", {})
+        defaults = default_rule("", "", "", "")["captcha"]
+        changed = False
+        for key, value in defaults.items():
+            if key not in captcha: captcha[key], changed = value, True
+        if changed: store.save_target(target["id"], target)
+
+
+def normalize_board_ids():
+    for target in store.targets():
+        changed = False
+        for board in target["rule"].get("boards", []):
+            if not board.get("id"):
+                board["id"], changed = "source_" + uuid.uuid4().hex[:12], True
+        if changed: store.save_target(target["id"], target)
+
+
+normalize_rule_names(); normalize_picker_sources(); normalize_proxy_configs(); normalize_browser_configs(); normalize_captcha_configs(); normalize_board_ids(); manager = RunnerManager(ROOT, store); picker = PickerManager(ROOT, store); login = LoginManager(ROOT, store, manager)
+
+@app.get("/api/targets")
+def targets():
+    return [{k:v for k,v in x.items() if k != "rule_json"} | {"status": manager.status(x["id"])} for x in store.targets()]
+
+@app.post("/api/targets")
+def create_target(payload: dict):
+    target_id = payload.get("id", "").strip()
+    if not target_id or store.target(target_id): raise HTTPException(400, "目标标识为空或已存在")
+    rule = default_rule(target_id, payload.get("folder", target_id), payload.get("domain", ""), "generic")
+    (ROOT / rule["folder"]).mkdir(parents=True, exist_ok=True)
+    store.save_target(target_id, {"name": payload.get("name", target_id), "enabled": True, "rule": rule})
+    return {"ok": True, "id": target_id}
+
+@app.get("/api/targets/{target_id}")
+def target(target_id: str):
+    x = store.target(target_id)
+    if not x: raise HTTPException(404)
+    x.pop("rule_json", None); x["status"] = manager.status(target_id); return x
+
+@app.put("/api/targets/{target_id}")
+def save(target_id: str, payload: dict): store.save_target(target_id, payload); return {"ok": True}
+
+@app.delete("/api/targets/{target_id}")
+def delete_target(target_id: str):
+    if not store.target(target_id): raise HTTPException(404, "目标不存在")
+    manager.action(target_id, "stop"); picker.stop(target_id); login.stop(target_id)
+    return {"ok": store.delete_target(target_id), "folder_kept": True}
+
+@app.post("/api/targets/{target_id}/actions/{action}")
+def action(target_id: str, action: str):
+    if action == "start": return manager.start(target_id)
+    if action not in ("pause", "resume", "stop"): raise HTTPException(400)
+    return manager.action(target_id, action)
+
+@app.post("/api/targets/{target_id}/login/start")
+def login_start(target_id: str, payload: dict):
+    if not store.target(target_id): raise HTTPException(404, "目标不存在")
+    return login.start(target_id, payload.get("board_id", ""))
+
+@app.post("/api/targets/{target_id}/login/stop")
+def login_stop(target_id: str, payload: dict): return login.stop(target_id, payload.get("board_id", ""))
+
+@app.get("/api/targets/{target_id}/login/status")
+def login_status(target_id: str, board_id: str = ""): return login.status(target_id, board_id)
+
+@app.get("/api/targets/{target_id}/accounts")
+def source_accounts(target_id: str):
+    target = store.target(target_id)
+    if not target: raise HTTPException(404, "目标不存在")
+    base = ROOT / target["rule"]["folder"] / "浏览器数据"
+    return [{"id": b["id"], "name": b.get("name", "未命名"),
+             "saved": (base / b["id"] / "登录状态.json").exists(),
+             "proxy": "独立固定代理" if b.get("proxy") else "继承目标代理"}
+            for b in target["rule"].get("boards", [])]
+
+@app.get("/api/targets/{target_id}/status")
+def status(target_id: str): return manager.status(target_id)
+
+@app.get("/api/targets/{target_id}/results")
+def results(target_id: str): return store.results(target_id)
+
+@app.delete("/api/targets/{target_id}/results")
+def clear_results(target_id: str): return {"ok": True, "deleted": store.clear_results(target_id)}
+
+@app.get("/api/targets/{target_id}/events")
+def events(target_id: str): return store.events(target_id)
+
+@app.get("/api/targets/{target_id}/rule.json")
+def export_rule(target_id: str):
+    target = store.target(target_id)
+    if not target: raise HTTPException(404)
+    rule = copy.deepcopy(target["rule"])
+    for key in ("password", "api_header_value"):
+        if rule.get("proxy", {}).get(key): rule["proxy"][key] = "***本机已保存，导出时隐藏***"
+    content = json.dumps(rule, ensure_ascii=False, indent=2)
+    return Response(content, media_type="application/json; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{target_id}-rule.json"'})
+
+@app.post("/api/targets/{target_id}/picker/start")
+def picker_start(target_id: str, payload: dict): return picker.start(target_id, payload.get("source", ""), payload.get("mode", "detail"))
+
+@app.get("/api/targets/{target_id}/picker")
+def picker_status(target_id: str): return picker.status(target_id)
+
+@app.post("/api/targets/{target_id}/picker/stop")
+def picker_stop(target_id: str): return picker.stop(target_id)
+
+@app.post("/api/targets/{target_id}/picker/activate")
+def picker_activate(target_id: str): return picker.activate(target_id)
+
+@app.get("/api/targets/{target_id}/export.csv")
+def export(target_id: str):
+    rows = store.results(target_id); target = store.target(target_id); data_fields = []
+    for field in target["rule"].get("fields", []):
+        name = field.get("name")
+        if name and name not in data_fields: data_fields.append(name)
+    for r in rows:
+        for key in r["data"]:
+            if key not in data_fields and key != "原始链接": data_fields.append(key)
+    fields = ["版块","列表时间",*data_fields,"链接","采集时间"]
+    out = io.StringIO(); w = csv.DictWriter(out, fieldnames=fields); w.writeheader()
+    for r in reversed(rows):
+        row = {"版块":r["board_name"],"列表时间":r["list_time"],"链接":r["url"],"采集时间":r["collected_at"]}
+        row.update({k:v for k,v in r["data"].items() if k in data_fields}); w.writerow(row)
+    return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{target_id}.csv"'})
+
+app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")

@@ -1,0 +1,148 @@
+let current=null, tab='boards', poll=null, picked=null, selectedRules=new Set(), selectedBoards=new Set(), selectedPickerSources=new Set();
+const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(url,opt={}){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});if(!r.ok)throw Error(await r.text());return r.json()}
+async function loadTargets(){const xs=await api('/api/targets');$('#targets').innerHTML=xs.map(x=>`<button class="target ${current?.id===x.id?'active':''}" onclick="loadTarget('${x.id}')"><b><i class="dot ${x.status.state}"></i>${esc(x.name)}</b><small>${esc(x.rule.domain)} · ${stateName(x.status.state)}</small></button>`).join('');if(!current&&xs[0])loadTarget(xs[0].id)}
+async function loadTarget(id){current=await api('/api/targets/'+id);selectedRules.clear();selectedBoards.clear();selectedPickerSources.clear();$('#title').textContent=current.name;$('#crumb').textContent=current.rule.domain;render();updateStatus(current.status);loadTargets()}
+function stateName(s){return({idle:'空闲',starting:'启动中',running:'采集中',paused:'等待人工',stopping:'停止中',stopped:'已停止',completed:'已完成',error:'错误'})[s]||s}
+function updateStatus(s){$('#state').textContent=stateName(s.state);for(const k of ['pages','opened','saved','captcha'])$('#'+k).textContent=s[k]||0;$('#message').textContent=s.message||'—';$('#runBtn').textContent=s.state==='running'?'暂停任务':s.state==='paused'?'继续任务':'开始运行'}
+$('#tabs').onclick=e=>{if(e.target.dataset.tab){tab=e.target.dataset.tab;document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===e.target));render()}}
+function render(){if(!current)return;const r=current.rule;let h='';if(tab==='boards')h=boards(r);if(tab==='filter')h=filter(r);if(tab==='fields')h=fields(r);if(tab==='limits')h=limits(r);if(tab==='browser')h=browserMode(r);if(tab==='proxy')h=proxy(r);if(tab==='results')results();else{$('#panel').innerHTML=h;decorateSelectionControls()}}
+function boards(r){return `<div class="notice">这里每一行都是一条页面来源规则。可以删除单条，也可以勾选多条后批量删除；删除后自动保存。</div><div class="card"><div class="card-head"><h2>页面来源规则 · ${r.boards.length} 条</h2><div><button class="danger" onclick="deleteSelectedBoards()">删除所选</button><button onclick="addBoard()">＋ 添加来源</button></div></div>${r.boards.map((b,i)=>`<div class="board source-rule"><input title="选择此规则" type="checkbox" ${selectedBoards.has(i)?'checked':''} onchange="toggleBoard(${i},this.checked)"><label class="enable-switch"><input type="checkbox" ${b.enabled?'checked':''} onchange="setBoard(${i},'enabled',this.checked)">启用</label><input value="${esc(b.name)}" onchange="setBoard(${i},'name',this.value)" placeholder="来源名称"><input value="${esc(b.url)}" onchange="setBoard(${i},'url',this.value)" placeholder="列表页地址"><input placeholder="独立代理；留空继承目标代理" value="${esc(b.proxy||'')}" onchange="setBoard(${i},'proxy',this.value)"><button class="danger source-delete" onclick="delBoard(${i})">删除此来源</button></div>`).join('')||'<div class="empty-rules">暂无页面来源规则，请点击“添加来源”。</div>'}</div>`}
+function filter(r){let x=r.list;return `<div class="card"><div class="card-head"><h2>列表定位与打开前过滤</h2></div><div class="card-body grid two"><label>帖子行 CSS 选择器<input value="${esc(x.row_selector)}" onchange="setPath('list.row_selector',this.value)"></label><label>详情链接 CSS 选择器<input value="${esc(x.link_selector)}" onchange="setPath('list.link_selector',this.value)"></label><label>必须包含的列表文本<input value="${esc(x.required_text)}" onchange="setPath('list.required_text',this.value)"></label><label>下一页 CSS 选择器<input value="${esc(x.next_selector)}" onchange="setPath('list.next_selector',this.value)"></label></div></div><div class="notice warning">过滤发生在列表页。当前规则：帖子所在行包含“${esc(x.required_text)}”才打开详情。</div>`}
+function fields(r){let ps=r.picker_sources||[];return `<div class="card"><div class="card-head"><h2>可视化规则拾取器</h2><button class="primary" onclick="openPicker()">打开页面并选择元素</button></div><div class="card-body"><div class="grid two"><label>页面来源<select id="pickerSource">${ps.map((x,i)=>`<option value="${i}">${esc(x.name)}</option>`).join('')}<option value="__manual__">临时输入网页地址</option></select></label><label>临时网页地址<input id="pickerUrl" placeholder="https://example.com/thread-1.html"></label></div><div id="pickerState" class="notice" style="margin-top:16px;margin-bottom:0">选择预设页面，或选择“临时输入网页地址”后打开拾取器。</div><div id="pickedBox"></div></div></div><div class="card"><div class="card-head"><h2>拾取器页面来源 · ${ps.length} 条</h2><div><button class="danger" onclick="deleteSelectedPickerSources()">删除所选</button><button onclick="addPickerSource()">＋ 增加来源</button></div></div>${ps.map((x,i)=>`<div class="picker-source-row"><input type="checkbox" ${selectedPickerSources.has(i)?'checked':''} onchange="togglePickerSource(${i},this.checked)"><input value="${esc(x.name)}" onchange="setPickerSource(${i},'name',this.value)" placeholder="显示名称"><input value="${esc(x.source)}" onchange="setPickerSource(${i},'source',this.value)" placeholder="sample:文件.html 或 https://网址"><button class="danger" onclick="delPickerSource(${i})">删除</button></div>`).join('')||'<div class="empty-rules">暂无预设来源，仍可临时输入网页地址。</div>'}</div><div class="card"><div class="card-head"><h2>元素提取规则 · ${r.fields.length} 条</h2><div><button class="danger" onclick="deleteSelectedRules()">删除所选</button> <button onclick="addField()">＋ 新增规则</button></div></div>${r.fields.map((f,i)=>`<div class="field rule-row"><input type="checkbox" ${selectedRules.has(i)?'checked':''} onchange="toggleRule(${i},this.checked)"><input value="${esc(f.name)}" onchange="setField(${i},'name',this.value)" placeholder="字段名称"><select onchange="setField(${i},'kind',this.value)">${['css','label_next','discuz_showhide','breadcrumb','body_after_fields'].map(k=>`<option ${f.kind===k?'selected':''}>${k}</option>`).join('')}</select><input value="${esc(f.selector||f.label||'')}" onchange="setFieldValue(${i},this.value)" placeholder="选择器或标签文字"><input value="${esc(f.attribute||'')}" onchange="setField(${i},'attribute',this.value)" placeholder="属性，如 href"><button class="danger" onclick="delField(${i})">删除</button></div>`).join('')}</div><p class="hint">页面来源和元素规则互相独立。修改名称或地址后点击顶部“保存配置”；删除操作会自动保存。</p>`}
+function limits(r){let f=r.frequency,l=r.limits,s=r.stop;return `<div class="card"><div class="card-head"><h2>访问频率</h2></div><div class="card-body grid"><label>列表间隔（秒）<input type="number" min="1" value="${f.list_seconds}" onchange="setNum('frequency.list_seconds',this.value)"></label><label>详情间隔（秒）<input type="number" min="1" value="${f.detail_seconds}" onchange="setNum('frequency.detail_seconds',this.value)"></label><label>超时（秒）<input type="number" value="${f.timeout_seconds}" onchange="setNum('frequency.timeout_seconds',this.value)"></label><label>最大重试<input type="number" value="${f.retry_limit}" onchange="setNum('frequency.retry_limit',this.value)"></label><label>错误退避（秒）<input type="number" value="${f.backoff_seconds}" onchange="setNum('frequency.backoff_seconds',this.value)"></label></div></div><div class="card"><div class="card-head"><h2>读取上限与结束条件</h2></div><div class="card-body grid"><label>最大列表页<input type="number" value="${l.max_list_pages}" onchange="setNum('limits.max_list_pages',this.value)"></label><label>最大详情数<input type="number" value="${l.max_details}" onchange="setNum('limits.max_details',this.value)"></label><label>最长运行（分钟）<input type="number" value="${l.max_minutes}" onchange="setNum('limits.max_minutes',this.value)"></label><label>连续空页停止<input type="number" value="${l.empty_pages}" onchange="setNum('limits.empty_pages',this.value)"></label><label>验证码上限<input type="number" value="${l.max_captcha}" onchange="setNum('limits.max_captcha',this.value)"></label><label>连续错误上限<input type="number" value="${l.max_errors}" onchange="setNum('limits.max_errors',this.value)"></label><label>命中字段名<input value="${esc(s.field_name)}" onchange="setPath('stop.field_name',this.value)"></label><label>字段包含即停止<input value="${esc(s.field_contains)}" onchange="setPath('stop.field_contains',this.value)"></label><label>详情包含文本（逗号分隔）<input value="${esc((s.detail_contains||[]).join(','))}" onchange="setPath('stop.detail_contains',this.value.split(',').filter(Boolean))"></label></div></div>`}
+function proxy(r){let p=r.proxy,c=r.captcha;return `<div class="notice warning">支持直连、固定代理和代理 API。代理配置仅用于你有权访问的网络环境；修改后请保存设置并重新启动目标。</div><div class="card"><div class="card-head"><h2>代理模式</h2></div><div class="card-body grid"><label>使用方式<select onchange="setPath('proxy.mode',this.value)"><option value="direct" ${p.mode==='direct'?'selected':''}>不使用代理</option><option value="fixed" ${p.mode==='fixed'?'selected':''}>固定代理</option><option value="api" ${p.mode==='api'?'selected':''}>API 获取代理</option></select></label><label>代理用户名<input value="${esc(p.username)}" onchange="setPath('proxy.username',this.value)"></label><label>代理密码<input type="password" value="${esc(p.password)}" onchange="setPath('proxy.password',this.value)"></label></div></div><div class="card"><div class="card-head"><h2>固定代理</h2></div><div class="card-body"><label>代理地址<input placeholder="http://host:port 或 socks5://host:port" value="${esc(p.server)}" onchange="setPath('proxy.server',this.value)"></label></div></div><div class="card"><div class="card-head"><h2>API 代理</h2></div><div class="card-body grid two"><label>API 地址<input placeholder="https://provider.example/api/get" value="${esc(p.api_url)}" onchange="setPath('proxy.api_url',this.value)"></label><label>请求方式<select onchange="setPath('proxy.api_method',this.value)"><option ${p.api_method==='GET'?'selected':''}>GET</option><option ${p.api_method==='POST'?'selected':''}>POST</option></select></label><label>JSON 取值路径<input placeholder="例如 data.proxy 或 data.0.ip" value="${esc(p.api_json_path)}" onchange="setPath('proxy.api_json_path',this.value)"></label><label>无协议时使用<select onchange="setPath('proxy.api_scheme',this.value)"><option ${p.api_scheme==='http'?'selected':''}>http</option><option ${p.api_scheme==='socks5'?'selected':''}>socks5</option></select></label><label>认证请求头名称<input placeholder="例如 Authorization" value="${esc(p.api_header_name)}" onchange="setPath('proxy.api_header_name',this.value)"></label><label>认证请求头内容<input type="password" placeholder="例如 Bearer token" value="${esc(p.api_header_value)}" onchange="setPath('proxy.api_header_value',this.value)"></label><label>获取失败重试次数<input type="number" min="0" value="${p.api_retries??2}" onchange="setNum('proxy.api_retries',this.value)"></label><label>POST 请求正文<textarea placeholder="可选，按代理服务商要求填写" onchange="setPath('proxy.api_body',this.value)">${esc(p.api_body||'')}</textarea></label></div></div><div class="card"><div class="card-head"><h2>验证码处理</h2></div><div class="card-body grid two"><label>自动打码（ddddocr）<select onchange="setPath('captcha.auto',this.value==='true')"><option value="true" ${c.auto!==false?'selected':''}>启用</option><option value="false" ${c.auto===false?'selected':''}>关闭</option></select></label><label>自动尝试次数<input type="number" min="1" value="${c.max_auto_tries??3}" onchange="setNum('captcha.max_auto_tries',this.value)"></label><label>检测文字（逗号分隔）<textarea onchange="setPath('captcha.texts',this.value.split(',').filter(Boolean))">${esc(c.texts.join(','))}</textarea></label><label>检测选择器（每行一个）<textarea onchange="setPath('captcha.selectors',this.value.split('\n').filter(Boolean))">${esc(c.selectors.join('\n'))}</textarea></label></div><p class="hint">启用后检测到验证码会先用 ddddocr 本地自动识别（支持字符验证码与极验滑块）；自动处理失败或无法识别的类型会自动回退人工处理。首次识别需要下载模型。</p></div>`}
+async function results(){const rows=await api(`/api/targets/${current.id}/results`);$('#panel').innerHTML=`<div class="card"><div class="card-head"><h2>独立采集结果 · ${rows.length} 条</h2><div><button class="danger" onclick="clearResults()">清空后重新采集</button><a href="/api/targets/${current.id}/export.csv"><button>导出 CSV</button></a></div></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>版块</th><th>标题</th><th>列表时间</th><th>数据</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.collected_at)}</td><td>${esc(x.board_name)}</td><td>${esc(x.title)}</td><td>${esc(x.list_time)}</td><td>${esc(JSON.stringify(x.data))}</td></tr>`).join('')}</tbody></table></div></div>`}
+async function clearResults(){if(!confirm('确定清空当前目标的全部采集结果吗？清空后可按新规则重新采集。'))return;let x=await api(`/api/targets/${current.id}/results`,{method:'DELETE'});alert(`已清空 ${x.deleted} 条结果`);results()}
+function setPath(path,v){let o=current.rule,a=path.split('.');for(let i=0;i<a.length-1;i++)o=o[a[i]];o[a.at(-1)]=v}function setNum(p,v){setPath(p,Number(v))}function setBoard(i,k,v){current.rule.boards[i][k]=v}function addBoard(){current.rule.boards.push({name:'新版块',url:'',enabled:true,proxy:''});render()}function delBoard(i){current.rule.boards.splice(i,1);render()}function setField(i,k,v){current.rule.fields[i][k]=v}function setFieldValue(i,v){let f=current.rule.fields[i];if(['label_next','discuz_showhide'].includes(f.kind))f.label=v;else f.selector=v}function addField(){current.rule.fields.push({name:`新字段${current.rule.fields.length+1}`,kind:'css',selector:''});render()}function delField(i){current.rule.fields.splice(i,1);selectedRules.clear();render()}function toggleRule(i,on){on?selectedRules.add(i):selectedRules.delete(i)}function deleteSelectedRules(){if(!selectedRules.size)return alert('请先勾选要删除的规则');current.rule.fields=current.rule.fields.filter((_,i)=>!selectedRules.has(i));selectedRules.clear();render()}
+async function openPicker(){let source=$('#pickerSource').value;if(source==='live'||current.rule.adapter==='generic')source=$('#pickerUrl').value.trim();if(!source)return alert('请先填写以 http:// 或 https:// 开头的目标网页地址');await api(`/api/targets/${current.id}/picker/start`,{method:'POST',body:JSON.stringify({source})});updatePicker()}
+async function updatePicker(){if(!current||tab!=='fields'||!$('#pickerState'))return;let s=await api(`/api/targets/${current.id}/picker`);$('#pickerState').innerHTML=`${esc(s.message||s.state)} ${s.state==='running'?`<button onclick="activatePicker()" style="margin-left:12px">窗口置前</button>`:''}`;if(s.selected){picked=s.selected;let savedFields=picked.saved_fields||[];if(picked.saved&&!savedFields.length&&picked.name)savedFields=[{name:picked.name,kind:'css',selector:picked.selector,...(picked.attribute?{attribute:picked.attribute}:{})}];savedFields.forEach(field=>{if(!current.rule.fields.some(f=>f.name===field.name&&f.selector===field.selector))current.rule.fields.push(field)});$('#pickedBox').innerHTML=picked.saved?`<div class="picker-result"><div><small>批量规则已保存</small><b>${savedFields.map(x=>esc(x.name)).join('、')}</b></div><span>✓ 已写入 JSON</span></div>`:`<div class="picker-result"><div><small>已选文本</small><b>${esc(picked.text||'(无文本)')}</b><code>${esc(picked.selector||'')}</code></div><button class="primary" onclick="addPickedField()">添加为字段</button></div>`}}
+async function activatePicker(){await api(`/api/targets/${current.id}/picker/activate`,{method:'POST'})}
+function addPickedField(){if(!picked)return;let name=prompt('字段名称，例如：详细地址');if(!name)return;current.rule.fields.push({name,kind:'css',selector:picked.selector,...(picked.attribute?{attribute:picked.attribute}:{})});render()}
+$('#saveBtn').onclick=async()=>{await api('/api/targets/'+current.id,{method:'PUT',body:JSON.stringify(current)});$('#saveBtn').textContent='已保存';setTimeout(()=>$('#saveBtn').textContent='保存设置',1200)}
+$('#ruleBtn').onclick=()=>{if(current)location.href=`/api/targets/${current.id}/rule.json`}
+$('#runBtn').onclick=async()=>{let s=await api(`/api/targets/${current.id}/status`);let a=s.state==='running'?'pause':s.state==='paused'?'resume':'start';updateStatus(await api(`/api/targets/${current.id}/actions/${a}`,{method:'POST'}))}
+function testProxy(){alert('保存配置后，启动任务会使用此固定代理。连通性与出口 IP 检测将在下一版加入。')}
+poll=setInterval(async()=>{if(current){let s=await api(`/api/targets/${current.id}/status`);updateStatus(s);updatePicker()}},1500);loadTargets();
+$('#newTarget').onclick=async()=>{let name=prompt('目标名称，例如：目标3');if(!name)return;let domain=prompt('网站域名，例如 example.com')||'';let id='target_'+Date.now();await api('/api/targets',{method:'POST',body:JSON.stringify({id,name,folder:name,domain})});current=null;await loadTargets();await loadTarget(id)}
+
+// 页面来源规则使用独立选择状态；以下定义覆盖旧版的简单增删函数。
+async function persist(){await api(`/api/targets/${current.id}`,{method:'PUT',body:JSON.stringify(current)})}
+async function addBoard(){current.rule.boards.push({name:'新来源',url:'',enabled:true,proxy:''});render();await persist()}
+async function delBoard(i){if(!confirm(`确定删除页面来源“${current.rule.boards[i].name||'未命名'}”吗？`))return;current.rule.boards.splice(i,1);selectedBoards.clear();render();await persist()}
+function toggleBoard(i,on){on?selectedBoards.add(i):selectedBoards.delete(i)}
+async function deleteSelectedBoards(){if(!selectedBoards.size)return alert('请先勾选要删除的页面来源规则');if(!confirm(`确定删除选中的 ${selectedBoards.size} 条页面来源规则吗？`))return;current.rule.boards=current.rule.boards.filter((_,i)=>!selectedBoards.has(i));selectedBoards.clear();render();await persist()}
+
+function setPickerSource(i,k,v){current.rule.picker_sources[i][k]=v}
+function togglePickerSource(i,on){on?selectedPickerSources.add(i):selectedPickerSources.delete(i)}
+async function addPickerSource(){let name=prompt('来源名称，例如：帖子样例3');if(!name)return;let source=prompt('输入本地样例（如 sample:内容3.html）或完整网页地址');if(!source)return;current.rule.picker_sources=current.rule.picker_sources||[];current.rule.picker_sources.push({name,source});render();await persist()}
+async function addLocalPickerSource(){let file=prompt('输入当前目标文件夹内的 HTML 文件名，例如：内容3.html');if(!file)return;file=file.trim().replace(/^sample:/,'');if(!/\.html?$/i.test(file))return alert('请输入以 .html 或 .htm 结尾的文件名');let name=prompt('显示名称',`本地样例：${file}`);if(!name)return;await appendPickerSource(name,`sample:${file}`)}
+async function addOnlinePickerSource(){let url=prompt('输入完整网页地址，例如：https://example.com/thread-1.html');if(!url)return;url=url.trim();if(!/^https?:\/\//i.test(url))return alert('网页地址必须以 http:// 或 https:// 开头');let name=prompt('显示名称',new URL(url).hostname);if(!name)return;await appendPickerSource(name,url)}
+async function appendPickerSource(name,source){current.rule.picker_sources=current.rule.picker_sources||[];current.rule.picker_sources.push({name,source});render();await persist()}
+async function delPickerSource(i){let x=current.rule.picker_sources[i];if(!confirm(`确定删除拾取器页面来源“${x.name}”吗？`))return;current.rule.picker_sources.splice(i,1);selectedPickerSources.clear();render();await persist()}
+async function deleteSelectedPickerSources(){if(!selectedPickerSources.size)return alert('请先勾选要删除的拾取器页面来源');if(!confirm(`确定删除选中的 ${selectedPickerSources.size} 个拾取器页面来源吗？`))return;current.rule.picker_sources=current.rule.picker_sources.filter((_,i)=>!selectedPickerSources.has(i));selectedPickerSources.clear();render();await persist()}
+
+// 使用当前目标自己维护的拾取器页面来源。
+async function openPicker(){let choice=$('#pickerSource').value,source;if(choice==='__manual__')source=$('#pickerUrl').value.trim();else source=(current.rule.picker_sources||[])[Number(choice)]?.source?.trim();if(!source)return alert('请选择页面来源，或填写完整网页地址');await api(`/api/targets/${current.id}/picker/start`,{method:'POST',body:JSON.stringify({source})});updatePicker()}
+
+function addSelectAllButton(titlePrefix,total,selected,handler){
+  let heading=[...document.querySelectorAll('.card-head h2')].find(x=>x.textContent.startsWith(titlePrefix));
+  if(!heading)return;let actions=heading.parentElement.querySelector('.card-head>div');if(!actions)return;
+  let button=document.createElement('button');button.className='select-all';button.textContent=total>0&&selected===total?'取消全选':'全选';button.onclick=handler;actions.prepend(button);
+}
+function decorateSelectionControls(){
+  if(tab==='filter')decorateListPicker();
+  if(tab==='boards')addSelectAllButton('页面来源规则',current.rule.boards.length,selectedBoards.size,toggleAllBoards);
+  if(tab==='fields'){
+    let ps=current.rule.picker_sources||[];
+    addSelectAllButton('拾取器页面来源',ps.length,selectedPickerSources.size,toggleAllPickerSources);
+    decoratePickerSourceButtons();
+    addSelectAllButton('元素提取规则',current.rule.fields.length,selectedRules.size,toggleAllRules);
+  }
+  decorateOrderingControls();
+  if(tab==='boards')removeSourceProxyInputs();
+  removeRedundantNotices();
+}
+function decorateListPicker(){
+  let card=document.createElement('div');card.className='card';card.innerHTML=`<div class="card-head"><h2>列表规则识别</h2><div><button onclick="autoListPicker()">一键自动识别</button><button class="primary" onclick="openListPicker()">手动选择修正</button></div></div><div class="card-body grid two"><label>选择列表页面来源<select id="listPickerSource">${current.rule.boards.filter(x=>x.url).map(x=>`<option value="${esc(x.url)}">${esc(x.name)}</option>`).join('')}</select></label><div id="listPickerState" class="notice" style="margin:0">可先自动识别并确认；不准确时再手动选择列表项、详情入口和翻页控件。</div></div>`;$('#panel').prepend(card);renameFilterLabels()
+}
+function renameFilterLabels(){let names={'帖子行 CSS 选择器':'列表项容器 CSS 选择器','详情链接 CSS 选择器':'详情入口 CSS 选择器','下一页 CSS 选择器':'下一页/加载更多 CSS 选择器'};document.querySelectorAll('#panel label').forEach(label=>{let node=[...label.childNodes].find(x=>x.nodeType===Node.TEXT_NODE&&x.textContent.trim());if(node&&names[node.textContent.trim()])node.textContent=names[node.textContent.trim()]})}
+async function openListPicker(){let source=$('#listPickerSource')?.value;if(!source)return alert('请先添加带网址的页面来源');await api(`/api/targets/${current.id}/picker/start`,{method:'POST',body:JSON.stringify({source,mode:'list'})});pollListPicker()}
+async function autoListPicker(){let source=$('#listPickerSource')?.value;if(!source)return alert('请先添加带网址的页面来源');$('#listPickerState').textContent='正在后台分析页面结构…';await api(`/api/targets/${current.id}/picker/start`,{method:'POST',body:JSON.stringify({source,mode:'list_auto'})});pollAutoListPicker()}
+async function pollAutoListPicker(){if(!current||tab!=='filter'||!$('#listPickerState'))return;let state=await api(`/api/targets/${current.id}/picker`);$('#listPickerState').textContent=state.message||state.state;if(['starting','running'].includes(state.state)){setTimeout(pollAutoListPicker,700);return}let x=state.selected;if(!x?.ok)return alert(x?.message||state.message||'自动识别失败');let preview=(x.previews||[]).map(v=>`• ${v.text}`).join('\n');let message=`识别到 ${x.row_count} 个列表项\n\n列表项：${x.row_selector}\n详情入口：${x.link_selector}\n翻页：${x.next_selector||'未识别'}\n\n示例：\n${preview}\n\n确认覆盖当前三个规则吗？`;if(!confirm(message))return;if(!x.next_selector)return alert('未识别到下一页/加载更多，请使用手动选择修正');for(let key of ['row_selector','link_selector','next_selector'])current.rule.list[key]=x[key];await persist();render()}
+async function pollListPicker(){if(!current||tab!=='filter'||!$('#listPickerState'))return;let state=await api(`/api/targets/${current.id}/picker`);$('#listPickerState').textContent=state.message||state.state;if(state.selected?.saved){for(let key of ['row_selector','link_selector','next_selector'])current.rule.list[key]=state.selected[key];await api(`/api/targets/${current.id}/picker/stop`,{method:'POST'});render();return}if(['starting','running'].includes(state.state))setTimeout(pollListPicker,800)}
+function removeSourceProxyInputs(){document.querySelectorAll('.source-rule').forEach(row=>{let inputs=row.querySelectorAll(':scope>input');if(inputs.length>=4)inputs[3].remove()})}
+function removeRedundantNotices(){
+  let prefixes=[
+    '这里每一行都是一条页面来源规则。',
+    '支持直连、固定代理和代理 API。',
+    '运行模式在下次启动任务时生效。',
+    '过滤发生在列表页。当前规则：'
+  ];
+  document.querySelectorAll('#panel .notice').forEach(node=>{
+    if(prefixes.some(prefix=>node.textContent.trim().startsWith(prefix)))node.remove();
+  });
+}
+function decorateOrderingControls(){
+  let groups=[];
+  if(tab==='boards')groups.push(['boards',[...document.querySelectorAll('.source-rule')]]);
+  if(tab==='fields')groups.push(['picker_sources',[...document.querySelectorAll('.picker-source-row')]],['fields',[...document.querySelectorAll('.rule-row')]]);
+  groups.forEach(([kind,rows])=>rows.forEach((row,index)=>{
+    let box=document.createElement('div');box.className='order-buttons';
+    let up=document.createElement('button');up.type='button';up.textContent='↑';up.title='上移';up.disabled=index===0;up.onclick=()=>moveRuleItem(kind,index,-1);
+    let down=document.createElement('button');down.type='button';down.textContent='↓';down.title='下移';down.disabled=index===rows.length-1;down.onclick=()=>moveRuleItem(kind,index,1);
+    box.append(up,down);row.insertBefore(box,row.lastElementChild);
+  }));
+}
+async function moveRuleItem(kind,index,direction){
+  let list=current.rule[kind]||[],next=index+direction;if(next<0||next>=list.length)return;
+  [list[index],list[next]]=[list[next],list[index]];
+  selectedBoards.clear();selectedPickerSources.clear();selectedRules.clear();render();await persist();
+}
+function decoratePickerSourceButtons(){
+  let heading=[...document.querySelectorAll('.card-head h2')].find(x=>x.textContent.startsWith('拾取器页面来源'));
+  if(!heading)return;let actions=heading.parentElement.querySelector('.card-head>div');if(!actions)return;
+  let old=actions.querySelector('[onclick="addPickerSource()"]');
+  if(old){old.textContent='＋ 添加在线网页';old.removeAttribute('onclick');old.onclick=addOnlinePickerSource}
+  if(!actions.querySelector('.add-local-picker')){let button=document.createElement('button');button.className='add-local-picker';button.textContent='＋ 添加本地 HTML';button.onclick=addLocalPickerSource;actions.insertBefore(button,old)}
+}
+function toggleAllBoards(){let n=current.rule.boards.length;selectedBoards=selectedBoards.size===n&&n?new Set():new Set(current.rule.boards.map((_,i)=>i));render()}
+function toggleAllPickerSources(){let a=current.rule.picker_sources||[],n=a.length;selectedPickerSources=selectedPickerSources.size===n&&n?new Set():new Set(a.map((_,i)=>i));render()}
+function toggleAllRules(){let n=current.rule.fields.length;selectedRules=selectedRules.size===n&&n?new Set():new Set(current.rule.fields.map((_,i)=>i));render()}
+
+$('#deleteTargetBtn').onclick=async()=>{
+  if(!current)return;
+  let name=current.name,id=current.id;
+  if(!confirm(`确定删除目标“${name}”吗？\n\n目标配置、采集结果和事件记录会删除；原始 HTML 文件夹会保留。`))return;
+  await api(`/api/targets/${id}`,{method:'DELETE'});
+  current=null;selectedRules.clear();selectedBoards.clear();selectedPickerSources.clear();
+  $('#panel').innerHTML='';$('#title').textContent='请选择或新建目标';$('#crumb').textContent='—';
+  await loadTargets();
+}
+
+// 元素规则删除后立即写入目标配置，避免刷新后恢复。
+async function delField(i){
+  let field=current.rule.fields[i];
+  if(!field)return;
+  if(!confirm(`确定删除元素提取规则“${field.name||'未命名'}”吗？`))return;
+  current.rule.fields.splice(i,1);selectedRules.clear();render();await persist();
+}
+async function deleteSelectedRules(){
+  if(!selectedRules.size)return alert('请先勾选要删除的元素提取规则');
+  if(!confirm(`确定删除选中的 ${selectedRules.size} 条元素提取规则吗？`))return;
+  current.rule.fields=current.rule.fields.filter((_,i)=>!selectedRules.has(i));
+  selectedRules.clear();render();await persist();
+}
+
+function browserMode(r){let mode=r.browser?.mode||'visible';return `<div class="notice">运行模式在下次启动任务时生效。自动切换模式会在正常采集时最小化窗口，检测到验证码时自动恢复。</div><div class="mode-cards"><label class="mode-card"><input type="radio" name="browserMode" value="visible" ${mode==='visible'?'checked':''} onchange="setPath('browser.mode',this.value)"><b>可视运行</b><span>始终显示独立浏览器，适合首次登录和调试。</span></label><label class="mode-card"><input type="radio" name="browserMode" value="silent" ${mode==='silent'?'checked':''} onchange="setPath('browser.mode',this.value)"><b>后台静默</b><span>无窗口运行、资源占用较低；验证码出现时需停止并切换模式。</span></label><label class="mode-card"><input type="radio" name="browserMode" value="auto" ${mode==='auto'?'checked':''} onchange="setPath('browser.mode',this.value)"><b>自动切换</b><span>平时最小化；验证码时恢复窗口，处理完成后再次最小化。</span></label></div><p class="hint">选择后点击顶部“保存设置”，再开始运行。</p>`}
+
+// 每条页面来源拥有稳定 ID，并绑定独立账号目录。
+async function addBoard(){current.rule.boards.push({id:`source_${Date.now()}_${Math.random().toString(16).slice(2,8)}`,name:'新来源',url:'',enabled:true,proxy:''});render();await persist()}
+$('#loginBtn').onclick=async()=>{
+  if(!current)return;await persist();let accounts=await api(`/api/targets/${current.id}/accounts`);
+  let modal=$('#dialog');modal.querySelector('.dialog-head h2').textContent='来源账号/代理管理';
+  $('#dialogBody').innerHTML=accounts.length?`<div class="table-wrap"><table><thead><tr><th>页面来源</th><th>登录状态</th><th>独立固定代理</th><th>操作</th></tr></thead><tbody>${accounts.map(x=>{let b=current.rule.boards.find(v=>v.id===x.id)||{};return `<tr><td>${esc(x.name)}</td><td>${x.saved?'账号已保存':'未配置账号'}</td><td><input class="account-proxy" value="${esc(b.proxy||'')}" placeholder="留空继承目标代理" onchange="setSourceProxy('${x.id}',this.value)"></td><td><button class="primary" onclick="startSourceLogin('${x.id}')">${x.saved?'更换账号':'登录账号'}</button></td></tr>`}).join('')}</tbody></table><p class="hint">独立代理支持 http://host:port 或 socks5://host:port。留空时继承“代理”标签中的目标固定代理或 API 代理。</p></div>`:'<div class="empty-rules">请先添加页面来源规则。</div>';
+  modal.showModal();
+}
+async function startSourceLogin(boardId){let state=await api(`/api/targets/${current.id}/login/start`,{method:'POST',body:JSON.stringify({board_id:boardId})});if(state.state==='error')return alert(state.message);$('#dialog').close()}
+async function setSourceProxy(boardId,value){let board=current.rule.boards.find(x=>x.id===boardId);if(!board)return;board.proxy=value.trim();await persist()}

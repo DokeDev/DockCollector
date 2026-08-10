@@ -1,0 +1,29 @@
+# Dock采集器本地运行数据
+collector.db
+collector.db-*
+*.csv
+*.xlsx
+*-rule.json
+
+# 登录状态、目标数据与浏览器用户配置
+浏览器数据/
+**/浏览器数据/
+登录状态.json
+**/登录状态.json
+
+# 本机依赖与内置浏览器
+.vendor/
+.browsers/
+.venv-windows/
+.browsers-windows/
+
+# Python 与系统缓存
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# 本地开发工具数据
+.reasonix/
+reasonix.toml
+.env
+.env.*

@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dock采集器</title><link rel="stylesheet" href="/style.css?v=20260810-2"><link rel="stylesheet" href="/overrides.css?v=20260810-2"><link rel="stylesheet" href="/picker.css?v=20260810-2"><link rel="stylesheet" href="/rules.css?v=20260810-2"></head>
+<body><div class="shell">
+  <aside><div class="brand"><span>D</span><div><b>Dock采集器</b><small>DOCK COLLECTOR</small></div></div>
+    <button class="new" id="newTarget">＋ 新建目标</button><div id="targets" class="targets"></div>
+    <div class="aside-foot"><i></i> 数据仅保存在本机</div>
+  </aside>
+  <main><header><div><p class="eyebrow">采集目标 / <span id="crumb">—</span></p><h1 id="title">正在载入…</h1></div>
+    <div class="actions"><button class="danger" id="deleteTargetBtn">删除目标</button><button id="loginBtn">账号/代理</button><button id="ruleBtn" title="导出当前目标的完整采集规则文件">导出规则</button><button id="saveBtn" title="保存页面中修改的全部设置">保存设置</button><button class="primary" id="runBtn">开始运行</button></div></header>
+    <section class="status-strip"><div><small>运行状态</small><strong id="state">空闲</strong></div><div><small>列表页</small><strong id="pages">0</strong></div><div><small>已打开</small><strong id="opened">0</strong></div><div><small>已保存</small><strong id="saved">0</strong></div><div><small>验证码</small><strong id="captcha">0</strong></div><div class="current"><small>当前动作</small><strong id="message">尚未运行</strong></div></section>
+    <nav id="tabs"><button class="active" data-tab="boards">页面来源</button><button data-tab="filter">列表筛选</button><button data-tab="fields">字段提取</button><button data-tab="limits">频率与结束</button><button data-tab="browser">运行模式</button><button data-tab="proxy">代理</button><button data-tab="results">采集结果</button></nav>
+    <div id="panel" class="panel"></div>
+  </main>
+</div><dialog id="dialog"><div class="dialog-head"><h2>样例验证结果</h2><button onclick="dialog.close()">×</button></div><div id="dialogBody"></div></dialog>
+<script src="/app.js?v=20260810-26"></script></body></html>

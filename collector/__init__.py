@@ -1,0 +1,1 @@
+"""Rule-driven local collector."""
