@@ -44,7 +44,7 @@ async function delPickerSource(i){let x=current.rule.picker_sources[i];if(!confi
 async function deleteSelectedPickerSources(){if(!selectedPickerSources.size)return alert('请先勾选要删除的拾取器页面来源');if(!confirm(`确定删除选中的 ${selectedPickerSources.size} 个拾取器页面来源吗？`))return;current.rule.picker_sources=current.rule.picker_sources.filter((_,i)=>!selectedPickerSources.has(i));selectedPickerSources.clear();render();await persist()}
 
 // 使用当前目标自己维护的拾取器页面来源。
-async function openPicker(){let choice=$('#pickerSource').value,source,board_id=$('#pickerAccount')?.value||'__picker__';if(choice==='__manual__')source=$('#pickerUrl').value.trim();else source=(current.rule.picker_sources||[])[Number(choice)]?.source?.trim();if(!source)return alert('请选择页面来源，或填写完整网页地址');if(source.startsWith('sample:'))board_id='__picker__';await api(`/api/targets/${current.id}/picker/start`,{method:'POST',body:JSON.stringify({source,board_id})});updatePicker()}
+async function openPicker(){let choice=$('#pickerSource').value,source,board_id=$('#pickerAccount')?.value||'__picker__';if(choice==='__manual__')source=$('#pickerUrl').value.trim();else if(choice.startsWith('board:'))source=current.rule.boards[Number(choice.split(':')[1])]?.url?.trim();else if(choice.startsWith('picker:'))source=(current.rule.picker_sources||[])[Number(choice.split(':')[1])]?.source?.trim();if(!source)return alert('请选择页面来源，或填写完整网页地址');if(source.startsWith('sample:'))board_id='__picker__';await api(`/api/targets/${current.id}/picker/start`,{method:'POST',body:JSON.stringify({source,board_id})});updatePicker()}
 
 function addSelectAllButton(titlePrefix,total,selected,handler){
   let heading=[...document.querySelectorAll('.card-head h2')].find(x=>x.textContent.startsWith(titlePrefix));
@@ -56,6 +56,7 @@ function decorateSelectionControls(){
   if(tab==='boards')addSelectAllButton('页面来源规则',current.rule.boards.length,selectedBoards.size,toggleAllBoards);
   if(tab==='fields'){
     let ps=current.rule.picker_sources||[];
+    decoratePickerSourceSelect();
     addSelectAllButton('拾取器页面来源',ps.length,selectedPickerSources.size,toggleAllPickerSources);
     decoratePickerSourceButtons();
     addSelectAllButton('元素提取规则',current.rule.fields.length,selectedRules.size,toggleAllRules);
@@ -64,6 +65,8 @@ function decorateSelectionControls(){
   if(tab==='boards')removeSourceProxyInputs();
   removeRedundantNotices();
 }
+function decoratePickerSourceSelect(){let select=$('#pickerSource');if(!select)return;let boards=(current.rule.boards||[]).filter(x=>x.url),ps=current.rule.picker_sources||[],html='';if(boards.length)html+=`<optgroup label="页面来源规则">${boards.map(x=>`<option value="board:${current.rule.boards.indexOf(x)}">${esc(x.name)}</option>`).join('')}</optgroup>`;if(ps.length)html+=`<optgroup label="拾取器页面来源">${ps.map((x,i)=>`<option value="picker:${i}">${esc(x.name)}</option>`).join('')}</optgroup>`;select.innerHTML=html+'<option value="__manual__">临时输入网页地址</option>';select.onchange=syncPickerAccount;syncPickerAccount()}
+function syncPickerAccount(){let select=$('#pickerSource'),account=$('#pickerAccount');if(!select||!account||!select.value.startsWith('board:'))return;let board=current.rule.boards[Number(select.value.split(':')[1])];if(!board)return;let mode=current.rule.account?.mode||'independent',wanted=mode==='shared'||(mode==='mixed'&&board.account_mode!=='independent')?'_shared':board.id;if([...account.options].some(x=>x.value===wanted))account.value=wanted}
 function decorateListPicker(){
   let card=document.createElement('div');card.className='card';card.innerHTML=`<div class="card-head"><h2>列表规则识别</h2><div><button onclick="autoListPicker()">一键自动识别</button><button class="primary" onclick="openListPicker()">手动选择修正</button></div></div><div class="card-body grid two"><label>选择列表页面来源<select id="listPickerSource">${current.rule.boards.filter(x=>x.url).map(x=>`<option value="${esc(x.url)}">${esc(x.name)}</option>`).join('')}</select></label><div id="listPickerState" class="notice" style="margin:0">可先自动识别并确认；不准确时再手动选择列表项、详情入口和翻页控件。</div></div>`;$('#panel').prepend(card);renameFilterLabels()
 }
