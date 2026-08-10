@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -133,15 +134,19 @@ class PickerManager:
             state.update(state="error", message="选择的登录账号来源不存在"); return
         profile_id = ("_shared" if board_id == "_shared" else
                       account_profile_id(rule, board) if board else "")
-        profile = (self.root / rule["folder"] / "浏览器数据" / profile_id
-                   if profile_id else self.root / rule["folder"] / "规则拾取器数据")
+        guest_profile = None
+        if profile_id:
+            profile = self.root / rule["folder"] / "浏览器数据" / profile_id
+        else:
+            guest_profile = tempfile.TemporaryDirectory(prefix="dock-picker-guest-")
+            profile = Path(guest_profile.name)
         profile.mkdir(parents=True, exist_ok=True)
         proxy = await TargetRunner(self.root, self.store, target_id).resolve_proxy(
             board or {}, rule.get("proxy", {})) if board else None
+        ctx = browser = None
         try:
             async with async_playwright() as pw:
                 state["message"] = "正在启动内置 Chromium"
-                browser = None
                 if mode == "list_auto":
                     browser = await asyncio.wait_for(
                         pw.chromium.launch(headless=True, proxy=proxy,
@@ -247,3 +252,12 @@ class PickerManager:
                 state.update(state="closed", message="规则拾取器已关闭")
         except Exception as exc:
             state.update(state="error", message=str(exc))
+        finally:
+            if ctx:
+                try: await ctx.close()
+                except Exception: pass
+            if browser:
+                try: await browser.close()
+                except Exception: pass
+            if guest_profile:
+                guest_profile.cleanup()
