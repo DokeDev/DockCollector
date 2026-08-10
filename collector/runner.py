@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import csv
 import json
@@ -86,11 +87,12 @@ class TargetRunner:
     async def handle_captcha(self, page, rule):
         cfg = rule["captcha"]
         if not await self.captcha_present(page, cfg): return
+        before = await self._captcha_snapshot(page, rule)
         self.status["captcha"] += 1
         browser_mode = rule.get("browser", {}).get("mode", "visible")
         if bool(cfg.get("auto", True)):
             await self.set_operation_lock(page, False)
-            if await self._auto_solve(page, cfg):
+            if await self._auto_solve(page, cfg, rule, before):
                 await self.set_operation_lock(page, True)
                 self.status.update(message="验证码已自动处理")
                 return
@@ -105,17 +107,17 @@ class TargetRunner:
         while not self.stop_flag.is_set():
             await asyncio.sleep(2)
             try:
-                present = await self.captcha_present(page, cfg)
+                verified, _, _ = await self._captcha_verification(page, rule, before)
             except Exception:
-                present = True  # 页面导航中，保守视为验证码仍在，继续等待
-            if not present:
+                verified = False  # 页面导航中，等待页面稳定后再判断
+            if verified:
                 await self.set_operation_lock(page, True)
                 if browser_mode == "auto": await self.set_window_state(page, "minimized")
                 self.resume(); return
 
     # ---------- ddddocr 自动打码 ----------
 
-    async def _auto_solve(self, page, cfg):
+    async def _auto_solve(self, page, cfg, rule=None, before=None):
         """尝试用 ddddocr 自动完成验证码，成功返回 True，失败回退人工。"""
         try:
             solver = await asyncio.to_thread(get_captcha_solver)
@@ -136,8 +138,12 @@ class TargetRunner:
                     self.store.event(self.target_id, "warning", f"自动打码异常：{exc}")
                 if handled:
                     await asyncio.sleep(2)
-                    if not await self.captcha_present(page, cfg):
-                        self.store.event(self.target_id, "info", f"验证码自动打码成功（尝试 {attempt} 次）")
+                    verified, score, reasons = await self._captcha_verification(
+                        page, rule or {"captcha": cfg}, before or {})
+                    if verified:
+                        detail = "、".join(reasons) or "验证组件消失"
+                        self.store.event(self.target_id, "info",
+                                         f"验证码自动打码成功（尝试 {attempt} 次，可信度 {score}：{detail}）")
                         return True
                 await self._refresh_captcha(page, cfg)
                 await asyncio.sleep(1)
@@ -145,6 +151,85 @@ class TargetRunner:
         except Exception as exc:
             self.store.event(self.target_id, "warning", f"自动打码加载失败：{exc}")
         return False
+
+    async def _captcha_snapshot(self, page, rule):
+        """记录提交前页面状态，供跨站点验证结果判定使用。"""
+        cfg = rule.get("captcha", {})
+        try:
+            body = await page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            body = ""
+        return {
+            "url": page.url,
+            "body_length": len(body.strip()),
+            "image_hash": await self._captcha_image_hash(page),
+            "normal_selectors": self._normal_page_selectors(rule),
+            "captcha_present": await self.captcha_present(page, cfg),
+        }
+
+    @staticmethod
+    def _normal_page_selectors(rule):
+        """复用采集规则形成正常页面特征，无需为每个网站重复填写成功文案。"""
+        selectors = []
+        row = rule.get("list", {}).get("row_selector", "").strip()
+        if row:
+            selectors.append(row)
+        for field in rule.get("fields", []):
+            selector = (field.get("selector") or "").strip()
+            if selector and selector not in selectors:
+                selectors.append(selector)
+        return selectors[:20]
+
+    async def _visible_selector_count(self, page, selectors):
+        count = 0
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                if await locator.count() and await locator.first.is_visible():
+                    count += 1
+            except Exception:
+                pass
+        return count
+
+    async def _captcha_image_hash(self, page):
+        image = page.locator("img[src*='seccode'], img[src*='captcha'], img[id*='seccode']").first
+        try:
+            if await image.count() and await image.is_visible():
+                return hashlib.sha256(await image.screenshot()).hexdigest()
+        except Exception:
+            pass
+        return ""
+
+    async def _captcha_verification(self, page, rule, before):
+        """综合页面结构变化判断是否放行，返回 (成功, 可信度, 原因)。"""
+        cfg = rule.get("captcha", {})
+        present = await self.captcha_present(page, cfg)
+        selectors = before.get("normal_selectors") or self._normal_page_selectors(rule)
+        normal_count = await self._visible_selector_count(page, selectors)
+        try:
+            body = await page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            body = ""
+
+        score, reasons = 0, []
+        if not present:
+            score += 45; reasons.append("验证组件已消失")
+        else:
+            score -= 50
+        if normal_count:
+            score += 45; reasons.append(f"正常页面结构已恢复 {normal_count} 项")
+        if before.get("url") and page.url != before["url"]:
+            score += 15; reasons.append("页面地址已变化")
+        old_length = int(before.get("body_length") or 0)
+        if old_length and len(body.strip()) >= max(old_length + 200, int(old_length * 1.25)):
+            score += 10; reasons.append("主要内容已恢复")
+
+        # 有正常页面规则时要求结构恢复；没有可用规则时兼容原来的“组件消失”判定。
+        if present:
+            return False, score, reasons
+        if selectors:
+            return normal_count > 0 or score >= 70, score, reasons
+        return True, score, reasons
 
     async def _auto_solve_once(self, page, cfg, solver):
         """单次自动打码：滑块优先，其次字符验证码。返回是否已操作。"""
