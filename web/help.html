@@ -16,9 +16,15 @@
   <aside><b>Dock采集器配置说明</b>
     <a href="#source">数据列表</a><a href="#filter">列表筛选</a><a href="#fields">字段提取</a>
     <a href="#frequency">访问频率</a><a href="#limits">读取上限</a><a href="#stop">结束条件</a>
-    <a href="#account">账号与代理</a><a href="#browser">运行模式</a><a href="#captcha">验证码</a>
+    <a href="#account">账号与代理</a><a href="#browser">运行模式</a><a href="#captcha">验证码</a><a href="#task-control">任务控制</a>
   </aside>
   <main><h1>配置说明</h1><p class="lead">每项设置的作用范围、触发时机和常见用法。修改后请点击“保存设置”，运行中的任务通常在下次启动时读取新配置。</p>
+
+  <section id="task-control"><h2>任务控制</h2><div class="group">
+    <article class="item"><h3>开始、暂停与继续</h3><p>“开始运行”创建新任务；运行时按钮变为“暂停任务”，暂停后变为“继续任务”。暂停不会清空结果，也不会从头读取。</p></article>
+    <article class="item"><h3>清空并重新开始</h3><p>二次确认后先安全停止旧任务，等待浏览器线程完全退出，再删除当前目标的全部采集结果和去重记录，最后从第一条数据列表重新启动。删除的结果无法恢复。</p></article>
+    <article class="item"><h3>实时结果</h3><p>停留在“采集结果”页面时每 1.5 秒检查一次新增记录；有变化才更新表格，并保留当前分页位置。</p></article>
+  </div></section>
 
   <section id="source"><h2>数据列表</h2><div class="group">
     <article class="item"><h3>启用</h3><p>控制本次任务是否处理该数据列表。关闭只会跳过，不会删除规则、账号或历史结果。</p><span class="scope">作用范围：单个数据列表</span></article>

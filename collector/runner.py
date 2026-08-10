@@ -421,23 +421,71 @@ class TargetRunner:
 
     async def _solve_char_captcha(self, page, cfg, solver):
         """Discuz 类字符验证码：识别 seccode 图片并填入输入框，随后提交表单。"""
-        img = page.locator("img[src*='seccode'], img[src*='captcha'], img[id*='seccode']").first
-        if not await img.count(): return False
-        inp = page.locator("input[name*='seccode'], input[name*='captcha'], input[id*='seccode']").first
-        if not await inp.count(): return False
+        img = page.locator(
+            "img[src*='seccode']:visible, img[src*='captcha']:visible, "
+            "img[id*='seccode']:visible, img[id*='captcha']:visible").first
+        if not await img.count():
+            self.store.event(self.target_id, "warning", "自动打码未找到可见验证码图片")
+            return False
+        inp = await self._captcha_input(page, img)
+        if inp is None:
+            self.store.event(self.target_id, "warning", "验证码图片已找到，但未找到可见且可编辑的输入框")
+            return False
         await page.wait_for_timeout(300)
         img_bytes = await img.screenshot()
         text = await asyncio.to_thread(solver.solve_best, img_bytes)
-        if not text: return False
-        await inp.fill(text)
+        if not text:
+            self.store.event(self.target_id, "warning", "验证码图片已获取，但 OCR 未识别出内容")
+            return False
+        await inp.fill(text, timeout=5000)
         form = inp.locator("xpath=ancestor::form").first
         if await form.count():
-            submit = form.locator("input[type=submit], button[type=submit]").last
+            submit = form.locator("input[type=submit]:visible, button[type=submit]:visible").last
             if await submit.count():
                 await submit.click()
                 return True
+        # 某些验证框不是独立 form，提交按钮位于同一弹层或父容器中。
+        container = inp.locator("xpath=ancestor::*[self::div or self::td][1]")
+        submit = container.locator(
+            "button:visible, input[type=submit]:visible, a:visible"
+        ).filter(has_text="提交").first
+        if await submit.count():
+            await submit.click()
+            return True
         await inp.press("Enter")
         return True
+
+    async def _captcha_input(self, page, image):
+        """返回可见、可编辑的验证码输入框，排除 seccodehash 等隐藏状态字段。"""
+        selectors = (
+            "input[name*='seccode']:not([type=hidden]):visible",
+            "input[id*='seccode']:not([type=hidden]):visible",
+            "input[name*='captcha']:not([type=hidden]):visible",
+            "input[id*='captcha']:not([type=hidden]):visible",
+            "input[name*='verify']:not([type=hidden]):visible",
+            "input[id*='verify']:not([type=hidden]):visible",
+        )
+        for selector in selectors:
+            locator = page.locator(selector)
+            for index in range(await locator.count()):
+                candidate = locator.nth(index)
+                try:
+                    if await candidate.is_editable():
+                        return candidate
+                except Exception:
+                    pass
+        # 兼容无 name/id 的输入框：只在验证码图片所属表单内查找，避免选中登录或搜索框。
+        form = image.locator("xpath=ancestor::form").first
+        if await form.count():
+            locator = form.locator("input[type=text]:visible, input:not([type]):visible")
+            for index in range(await locator.count()):
+                candidate = locator.nth(index)
+                try:
+                    if await candidate.is_editable():
+                        return candidate
+                except Exception:
+                    pass
+        return None
 
     async def _refresh_captcha(self, page, cfg):
         """刷新验证码图片并清空输入框，供下一轮自动打码使用。"""
@@ -453,7 +501,10 @@ class TargetRunner:
                     }""")
                 except Exception:
                     pass
-        inp = page.locator("input[name*='seccode'], input[name*='captcha']").first
+        inp = page.locator(
+            "input[name*='seccode']:not([type=hidden]):visible, "
+            "input[name*='captcha']:not([type=hidden]):visible, "
+            "input[name*='verify']:not([type=hidden]):visible").first
         if await inp.count():
             try:
                 await inp.fill("")
@@ -691,7 +742,9 @@ class TargetRunner:
 
 
 class RunnerManager:
-    def __init__(self, root, store): self.root, self.store, self.runners = root, store, {}
+    def __init__(self, root, store):
+        self.root, self.store, self.runners = root, store, {}
+        self.restarting = set()
     def start(self, target_id):
         old = self.runners.get(target_id)
         if old and old.status["state"] not in ("completed", "stopped", "error"): return old.status
@@ -701,5 +754,29 @@ class RunnerManager:
         r = self.runners.get(target_id)
         if not r: return {"state": "idle", "message": "任务尚未启动"}
         getattr(r, action)(); return r.status
+    def restart_clear(self, target_id):
+        """停止现有线程，确认退出后清空结果并从第一个数据列表重新启动。"""
+        if target_id in self.restarting:
+            return {"state": "restarting", "message": "正在清空结果并重新开始"}
+        self.restarting.add(target_id)
+
+        def worker():
+            try:
+                old = self.runners.get(target_id)
+                if old and old.thread and old.thread.is_alive():
+                    old.stop()
+                    old.thread.join()  # 必须等旧任务完全退出，防止清空后又写入旧结果
+                deleted = self.store.clear_results(target_id)
+                self.store.event(target_id, "info", f"已清空 {deleted} 条结果，任务重新开始")
+                runner = TargetRunner(self.root, self.store, target_id)
+                self.runners[target_id] = runner
+                runner.start()
+            finally:
+                self.restarting.discard(target_id)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"state": "restarting", "message": "正在停止旧任务并清空结果"}
     def status(self, target_id):
+        if target_id in self.restarting:
+            return {"state": "restarting", "message": "正在清空结果并重新开始"}
         r = self.runners.get(target_id); return r.status if r else {"state": "idle", "message": "尚未运行"}
