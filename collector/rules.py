@@ -96,6 +96,7 @@ def default_rule(target_id, folder, domain, adapter):
             "time_selector": "",
             "required_text": "昨天",
             "exclude_texts": [],
+            "exclude_rules": [],
             "next_selector": "a.nxt",
             "pagination_mode": "next",
         },

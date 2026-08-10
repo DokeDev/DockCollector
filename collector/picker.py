@@ -79,6 +79,18 @@ STOP_PICKER_SCRIPT = r"""
 })();
 """
 
+LIST_FILTER_PICKER_SCRIPT = r"""
+(() => {
+  if(window.__collectorListFilterPicker)return;window.__collectorListFilterPicker=true;
+  const simple=el=>{if(el.id)return '#'+CSS.escape(el.id);let c=[...el.classList].slice(0,3),s=el.tagName.toLowerCase();return s+(c.length?'.'+c.map(CSS.escape).join('.'):'')};
+  const relative=(el,row)=>{let s=simple(el);if(row.querySelectorAll(s).length===1)return s;let a=[];for(let n=el;n&&n!==row;n=n.parentElement){let p=simple(n),parent=n.parentElement;if(parent&&parent.querySelectorAll(':scope > '+p).length>1)p+=`:nth-of-type(${[...parent.children].filter(x=>x.tagName===n.tagName).indexOf(n)+1})`;a.unshift(p);if(row.querySelectorAll(a.join(' > ')).length===1)break}return a.join(' > ')};
+  const rowSelector=window.__collectorListFilterRow||'';
+  const box=document.createElement('div'),tip=document.createElement('div');Object.assign(box.style,{position:'fixed',pointerEvents:'none',zIndex:'2147483647',border:'2px solid #e25b45',background:'#e25b4520'});Object.assign(tip.style,{position:'fixed',pointerEvents:'none',zIndex:'2147483647',background:'#7b271b',color:'#fff',padding:'7px 10px',borderRadius:'7px',font:'13px sans-serif',maxWidth:'520px'});document.documentElement.append(box,tip);
+  document.addEventListener('mousemove',e=>{let row=rowSelector?e.target.closest(rowSelector):null,r=e.target.getBoundingClientRect();Object.assign(box.style,{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});tip.style.left=Math.max(4,Math.min(innerWidth-530,r.left))+'px';tip.style.top=Math.max(4,r.top-36)+'px';tip.textContent=row?'点击选择当前列表项内的判断元素：'+relative(e.target,row):'请在列表项内部选择元素'},true);
+  document.addEventListener('click',async e=>{if(!rowSelector)return;e.preventDefault();e.stopImmediatePropagation();let row=e.target.closest(rowSelector);if(!row){tip.textContent='这里不属于已配置的列表项，请重新选择';return}let value={selector:relative(e.target,row),text:(e.target.innerText||e.target.textContent||'').trim().replace(/\s+/g,' ').slice(0,300),list_filter:true};tip.textContent='已选择，正在返回…';await window.__collectorStopPick(value);setTimeout(()=>window.close(),500)},true);
+})();
+"""
+
 LIST_PICKER_SCRIPT = r"""
 (() => {
   if(window.__collectorListPicker)return;window.__collectorListPicker=true;
@@ -261,6 +273,11 @@ class PickerManager:
                             await page.evaluate(LIST_PICKER_SCRIPT)
                         elif mode == "stop":
                             await page.evaluate(STOP_PICKER_SCRIPT)
+                        elif mode == "list_filter":
+                            listing = self.store.target(target_id)["rule"].get("list", {})
+                            await page.evaluate("selector => { window.__collectorListFilterRow = selector; }",
+                                                listing.get("row_selector", ""))
+                            await page.evaluate(LIST_FILTER_PICKER_SCRIPT)
                         else:
                             await page.evaluate(PICKER_SCRIPT)
                         state["panel_ready"] = True
@@ -290,7 +307,9 @@ class PickerManager:
                 await install_picker()
                 await page.bring_to_front()
                 self.activate(target_id)
-                state.update(state="running", message="依次选择帖子行、详情链接和下一页" if mode == "list" else "在浏览器页面中点击要保存的内容")
+                state.update(state="running", message=("依次选择帖子行、详情链接和下一页" if mode == "list"
+                             else "点击列表项内用于判断是否跳过的元素" if mode == "list_filter"
+                             else "在浏览器页面中点击要保存的内容"))
                 while not state["stop"] and not page.is_closed(): await asyncio.sleep(.5)
                 await ctx.close()
                 if browser: await browser.close()

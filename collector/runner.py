@@ -677,7 +677,30 @@ class TargetRunner:
             matched = []
             for i in range(await rows.count()):
                 row = rows.nth(i); text = await row.inner_text()
-                if any(value and value in text for value in rule["list"].get("exclude_texts", [])):
+                excluded = False
+                for condition in rule["list"].get("exclude_rules", []):
+                    if not condition.get("enabled", True):
+                        continue
+                    selector = str(condition.get("selector", "")).strip()
+                    node = row.locator(selector).first if selector else row
+                    try:
+                        present = await node.count() > 0
+                        actual = (await node.inner_text()).strip() if present else ""
+                    except Exception:
+                        present, actual = False, ""
+                    value = str(condition.get("value", ""))
+                    operator = condition.get("operator", "contains")
+                    hit = {"contains": bool(value) and value in actual,
+                           "equals": actual == value,
+                           "not_contains": bool(value) and value not in actual,
+                           "exists": present,
+                           "missing": not present,
+                           "empty": present and not actual}.get(operator, False)
+                    if hit:
+                        excluded = True
+                        break
+                # 兼容尚未经过配置迁移的运行中旧规则。
+                if excluded or any(value and value in text for value in rule["list"].get("exclude_texts", [])):
                     self.status["skipped"] += 1; continue
                 required_text = str(rule["list"].get("required_text", ""))
                 time_selector = str(rule["list"].get("time_selector", "")).strip()

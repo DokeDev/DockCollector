@@ -78,10 +78,18 @@ def normalize_list_configs():
     for target in store.targets():
         listing = target["rule"].setdefault("list", {})
         changed = False
-        for key, value in {"time_selector": "", "exclude_texts": [],
+        for key, value in {"time_selector": "", "exclude_texts": [], "exclude_rules": [],
                            "pagination_mode": "next"}.items():
             if key not in listing:
                 listing[key], changed = copy.deepcopy(value), True
+        # 旧版整行排除词迁移为可编辑规则；空选择器表示兼容检查整个列表项。
+        if listing.get("exclude_texts"):
+            for text in listing["exclude_texts"]:
+                if text and not any(x.get("selector", "") == "" and x.get("value") == text
+                                    for x in listing["exclude_rules"]):
+                    listing["exclude_rules"].append({"enabled": True, "selector": "",
+                                                     "operator": "contains", "value": text})
+            listing["exclude_texts"], changed = [], True
         if changed:
             store.save_target(target["id"], target)
 
