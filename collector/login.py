@@ -39,6 +39,7 @@ class LoginManager:
     def __init__(self, root, store, runner_manager):
         self.root, self.store, self.runner_manager = root, store, runner_manager
         self.sessions = {}
+        self.controls = {}
 
     def start(self, target_id, board_id):
         running = self.runner_manager.status(target_id).get("state")
@@ -54,12 +55,38 @@ class LoginManager:
         key = (target_id, board_id)
         old = self.sessions.get(key)
         if old and old.get("state") in ("starting", "running"):
+            self._wake(key)
             return old
         state = {"state": "starting", "message": "正在打开预登录浏览器", "stop": False}
         state["board_id"] = board_id
         self.sessions[key] = state
         threading.Thread(target=lambda: asyncio.run(self._run(target_id, board_id, state)), daemon=True).start()
         return state
+
+    def _wake(self, key):
+        control = self.controls.get(key)
+        if not control:
+            return
+        loop, page = control
+        try:
+            asyncio.run_coroutine_threadsafe(self._bring_to_front(page), loop)
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _bring_to_front(page):
+        try:
+            session = await page.context.new_cdp_session(page)
+            info = await session.send("Browser.getWindowForTarget")
+            await session.send("Browser.setWindowBounds", {
+                "windowId": info["windowId"], "bounds": {"windowState": "normal"}})
+            await session.detach()
+        except Exception:
+            pass
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
 
     def stop(self, target_id, board_id=""):
         state = self.sessions.get((target_id, board_id))
@@ -85,7 +112,10 @@ class LoginManager:
         if not target:
             state.update(state="error", message="目标不存在"); return
         rule = target["rule"]
-        board = next((x for x in rule.get("boards", []) if x.get("id") == board_id), None)
+        boards = rule.get("boards", [])
+        board = next((x for x in boards if x.get("id") == board_id), None)
+        if board_id == "_shared" and boards:
+            board = next((x for x in boards if x.get("enabled", True)), boards[0])
         if not board:
             state.update(state="error", message="页面来源不存在"); return
         profile_id = "_shared" if board_id == "_shared" else account_profile_id(rule, board)
@@ -115,6 +145,9 @@ class LoginManager:
                 await context.expose_binding("__collectorImportCookies", import_cookies)
                 await context.add_init_script(script=LOGIN_TOOL_SCRIPT)
                 page = context.pages[0] if context.pages else await context.new_page()
+                key = (target_id, board_id)
+                self.controls[key] = (asyncio.get_running_loop(), page)
+                await self._bring_to_front(page)
                 for existing_page in context.pages:
                     try: await existing_page.evaluate(LOGIN_TOOL_SCRIPT)
                     except Exception: pass
@@ -134,6 +167,7 @@ class LoginManager:
         except Exception as exc:
             state.update(state="error", message=f"预登录失败：{exc}")
         finally:
+            self.controls.pop((target_id, board_id), None)
             if context:
                 try: await context.close()
                 except Exception: pass
