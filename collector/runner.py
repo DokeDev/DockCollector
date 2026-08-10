@@ -403,7 +403,7 @@ class TargetRunner:
         try:
             async with async_playwright() as pw:
                 self.status.update(state="running", message="正在采集")
-                context = page = session_key = None
+                browser = context = page = session_key = None
                 try:
                     for board in rule.get("boards", []):
                         if self.stop_flag.is_set(): break
@@ -416,11 +416,22 @@ class TargetRunner:
                         if context is None or next_key != session_key:
                             if context is not None:
                                 await context.close()
-                                context = page = session_key = None
+                                if browser is not None:
+                                    await browser.close()
+                                browser = context = page = session_key = None
                             browser_mode = rule.get("browser", {}).get("mode", "visible")
-                            context = await pw.chromium.launch_persistent_context(
-                                str(profile), headless=browser_mode == "silent",
-                                proxy=proxy_arg, viewport={"width": 1280, "height": 850})
+                            if browser_mode == "silent":
+                                # 不打开持久化账号目录，避免 macOS 后台进程读取
+                                # Chromium Safe Storage 并弹出系统钥匙串授权框。
+                                browser = await pw.chromium.launch(
+                                    headless=True, proxy=proxy_arg,
+                                    args=["--password-store=basic", "--use-mock-keychain"])
+                                context = await browser.new_context(
+                                    viewport={"width": 1280, "height": 850})
+                            else:
+                                context = await pw.chromium.launch_persistent_context(
+                                    str(profile), headless=False, proxy=proxy_arg,
+                                    viewport={"width": 1280, "height": 850})
                             snapshot = profile / "登录状态.json"
                             if snapshot.exists():
                                 try:
@@ -439,6 +450,8 @@ class TargetRunner:
                 finally:
                     if context is not None:
                         await context.close()
+                    if browser is not None:
+                        await browser.close()
             self.status.update(state="stopped" if self.stop_flag.is_set() else "completed",
                                message="已停止" if self.stop_flag.is_set() else "采集完成")
         except Exception as exc:

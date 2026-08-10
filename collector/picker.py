@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -45,13 +46,23 @@ PICKER_SCRIPT = r"""
   }
   const insidePanel=el=>panel===el||panel.contains(el);
   const safe=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function postBody(el){
+    if(!el.matches?.("td[id^='postmessage_']"))return null;
+    const fields=[...el.querySelectorAll('.showhide')];
+    if(!fields.length)return null;
+    const range=document.createRange();range.setStartAfter(fields[fields.length-1]);range.setEnd(el,el.childNodes.length);
+    const text=range.toString().trim().replace(/\s+/g,' '),rect=range.getBoundingClientRect();
+    return text&&rect.width&&rect.height?{text,rect}:null;
+  }
+  const inRect=(e,r)=>e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;
   function renderItems(){
     const root=panel.querySelector('.collector-items'); root.innerHTML='';
-    chosen.forEach((item,index)=>{const row=document.createElement('div');Object.assign(row.style,{padding:'10px',border:'1px solid #dfe6e1',borderRadius:'8px',marginBottom:'8px'});row.innerHTML=`<div style="display:flex;justify-content:space-between;gap:8px"><b style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${safe(item.text||'(无文本)')}</b><button data-remove="${index}" style="border:0;background:transparent;color:#b94040">移除</button></div><code style="display:block;color:#137657;word-break:break-all;margin:6px 0">${safe(item.selector)}</code><input data-name="${index}" value="${safe(item.name||'')}" placeholder="字段名称，例如：详细地址" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #ccd7d1;border-radius:7px">`;root.append(row);});
+    chosen.forEach((item,index)=>{const row=document.createElement('div');Object.assign(row.style,{padding:'10px',border:'1px solid #dfe6e1',borderRadius:'8px',marginBottom:'8px'});row.innerHTML=`<div style="display:flex;justify-content:space-between;gap:8px"><b style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${safe(item.text||'(无文本)')}</b><button data-remove="${index}" style="border:0;background:transparent;color:#b94040">移除</button></div><code style="display:block;color:#137657;word-break:break-all;margin:6px 0">${safe(item.selector)}</code><div style="display:grid;grid-template-columns:minmax(0,1fr) 154px;gap:7px"><input data-name="${index}" value="${safe(item.name||'')}" placeholder="字段名称，例如：正文" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #ccd7d1;border-radius:7px"><select data-kind="${index}" style="width:100%;padding:9px;border:1px solid #ccd7d1;border-radius:7px;background:#fff"><option value="css" ${item.kind!=='body_after_fields'?'selected':''}>元素全部内容</option><option value="body_after_fields" ${item.kind==='body_after_fields'?'selected':''}>正文（排除字段）</option></select></div>${item.kind==='body_after_fields'?'<div style="margin-top:6px;color:#b06716">已识别帖子正文区域，保存时会排除上方结构化字段。</div>':''}`;root.append(row);});
     root.querySelectorAll('[data-remove]').forEach(btn=>btn.onclick=e=>{e.preventDefault();e.stopPropagation();chosen.splice(Number(btn.dataset.remove),1);renderItems();if(!chosen.length)hidePanel();});
+    root.querySelectorAll('[data-kind]').forEach(select=>select.onchange=e=>{e.preventDefault();e.stopPropagation();chosen[Number(select.dataset.kind)].kind=select.value;renderItems();});
   }
-  document.addEventListener('mousemove',e=>{const el=e.target;if(el===box||el===tip||insidePanel(el))return;const r=el.getBoundingClientRect();Object.assign(box.style,{display:'block',left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});tip.style.display='block';tip.style.left=Math.max(4,Math.min(innerWidth-430,r.left))+'px';tip.style.top=Math.max(4,r.top-34)+'px';tip.textContent=selector(el)+' · 点击选择';},true);
-  document.addEventListener('click',e=>{if(e.target===box||e.target===tip||insidePanel(e.target))return;e.preventDefault();e.stopImmediatePropagation();const el=e.target;const item={selector:selector(el),text:(el.innerText||el.textContent||'').trim().replace(/\s+/g,' ').slice(0,500),tag:el.tagName.toLowerCase(),attribute:''};if(!chosen.some(x=>x.selector===item.selector))chosen.push(item);renderItems();panel.querySelector('.collector-save-status').textContent=`已选择 ${chosen.length} 项，可继续点击页面元素`;showPanel();},true);
+  document.addEventListener('mousemove',e=>{const el=e.target;if(el===box||el===tip||insidePanel(el))return;const body=postBody(el),isBody=body&&inRect(e,body.rect),r=isBody?body.rect:el.getBoundingClientRect();Object.assign(box.style,{display:'block',left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});tip.style.display='block';tip.style.left=Math.max(4,Math.min(innerWidth-430,r.left))+'px';tip.style.top=Math.max(4,r.top-34)+'px';tip.textContent=isBody?'帖子正文（排除上方字段） · 点击选择':selector(el)+' · 点击选择';},true);
+  document.addEventListener('click',e=>{if(e.target===box||e.target===tip||insidePanel(e.target))return;e.preventDefault();e.stopImmediatePropagation();const el=e.target,body=postBody(el),post=body&&inRect(e,body.rect)?el:null;const item={selector:post?"td.t_f[id^='postmessage_']":selector(el),text:(post?body.text:(el.innerText||el.textContent||'').trim().replace(/\s+/g,' ')).slice(0,500),tag:el.tagName.toLowerCase(),attribute:'',kind:post?'body_after_fields':'css'};if(!chosen.some(x=>x.selector===item.selector))chosen.push(item);renderItems();panel.querySelector('.collector-save-status').textContent=post?'已选择帖子正文；上方结构化字段不会包含在内':`已选择 ${chosen.length} 项，可继续点击页面元素`;showPanel();},true);
   panel.querySelector('.collector-hide').onclick=e=>{e.preventDefault();e.stopPropagation();hidePanel();};
   panel.querySelector('.collector-clear').onclick=e=>{e.preventDefault();e.stopPropagation();chosen.splice(0);renderItems();hidePanel();};
   window.__collectorSaveAll=async()=>{const status=panel.querySelector('.collector-save-status');panel.querySelectorAll('[data-name]').forEach(input=>chosen[Number(input.dataset.name)].name=input.value.trim());if(!chosen.length||chosen.some(x=>!x.name)){status.style.color='#b94040';status.textContent='请为每个选中元素填写字段名称';return;}status.style.color='#64736b';status.textContent='正在保存全部规则…';try{const result=await window.__collectorPick({items:chosen,save:true});status.style.color='#137657';status.textContent=result?.message||`已保存 ${chosen.length} 条规则`;chosen.splice(0);renderItems();setTimeout(()=>hidePanel(),1400);}catch(err){status.style.color='#b94040';status.textContent='保存失败：'+err;}};
@@ -190,7 +201,13 @@ class PickerManager:
                             while name in used_names:
                                 name = f"{base}_{number}"; number += 1
                             used_names.add(name)
-                            field = {"name": name, "kind": "css", "selector": item["selector"]}
+                            selector = item["selector"]
+                            kind = item.get("kind", "css")
+                            if (kind == "body_after_fields" or
+                                    (re.fullmatch(r"#postmessage_\d+", selector) and base in {"内容", "正文", "帖子正文"})):
+                                kind = "body_after_fields"
+                                selector = "td.t_f[id^='postmessage_']"
+                            field = {"name": name, "kind": kind, "selector": selector}
                             if item.get("attribute"): field["attribute"] = item["attribute"]
                             duplicate = next((x for x in existing if x.get("name") == field["name"] and x.get("selector") == field["selector"]), None)
                             if not duplicate: existing.append(field)
