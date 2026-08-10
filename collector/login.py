@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 from .runner import TargetRunner
+from .rules import account_profile_id
 
 
 LOGIN_TOOL_SCRIPT = r"""
@@ -44,7 +45,10 @@ class LoginManager:
         if running in ("starting", "running", "paused", "stopping"):
             return {"state": "error", "message": "请先停止当前采集任务"}
         target = self.store.target(target_id)
-        board = next((x for x in target["rule"].get("boards", []) if x.get("id") == board_id), None) if target else None
+        boards = target["rule"].get("boards", []) if target else []
+        board = next((x for x in boards if x.get("id") == board_id), None)
+        if board_id == "_shared" and boards:
+            board = next((x for x in boards if x.get("enabled", True)), boards[0])
         if not board:
             return {"state": "error", "message": "请选择有效的页面来源"}
         key = (target_id, board_id)
@@ -84,7 +88,8 @@ class LoginManager:
         board = next((x for x in rule.get("boards", []) if x.get("id") == board_id), None)
         if not board:
             state.update(state="error", message="页面来源不存在"); return
-        profile = self.root / rule["folder"] / "浏览器数据" / board_id
+        profile_id = "_shared" if board_id == "_shared" else account_profile_id(rule, board)
+        profile = self.root / rule["folder"] / "浏览器数据" / profile_id
         profile.mkdir(parents=True, exist_ok=True)
         context = None
         try:

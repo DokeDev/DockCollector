@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .rules import default_rule
+from .rules import account_profile_id, default_rule
 from .picker import PickerManager
 from .login import LoginManager
 from .runner import RunnerManager
@@ -92,7 +92,20 @@ def normalize_board_ids():
         if changed: store.save_target(target["id"], target)
 
 
-normalize_rule_names(); normalize_picker_sources(); normalize_proxy_configs(); normalize_browser_configs(); normalize_captcha_configs(); normalize_board_ids(); manager = RunnerManager(ROOT, store); picker = PickerManager(ROOT, store); login = LoginManager(ROOT, store, manager)
+def normalize_account_configs():
+    """旧目标保持来源独立账号；新目标默认使用统一账号。"""
+    for target in store.targets():
+        rule = target["rule"]
+        changed = False
+        if "account" not in rule:
+            rule["account"], changed = {"mode": "independent"}, True
+        for board in rule.get("boards", []):
+            if "account_mode" not in board:
+                board["account_mode"], changed = "shared", True
+        if changed: store.save_target(target["id"], target)
+
+
+normalize_rule_names(); normalize_picker_sources(); normalize_proxy_configs(); normalize_browser_configs(); normalize_captcha_configs(); normalize_board_ids(); normalize_account_configs(); manager = RunnerManager(ROOT, store); picker = PickerManager(ROOT, store); login = LoginManager(ROOT, store, manager)
 
 @app.get("/api/targets")
 def targets():
@@ -144,10 +157,18 @@ def source_accounts(target_id: str):
     target = store.target(target_id)
     if not target: raise HTTPException(404, "目标不存在")
     base = ROOT / target["rule"]["folder"] / "浏览器数据"
-    return [{"id": b["id"], "name": b.get("name", "未命名"),
-             "saved": (base / b["id"] / "登录状态.json").exists(),
-             "proxy": "独立固定代理" if b.get("proxy") else "继承目标代理"}
-            for b in target["rule"].get("boards", [])]
+    rule = target["rule"]
+    sources = []
+    for b in rule.get("boards", []):
+        profile_id = account_profile_id(rule, b)
+        sources.append({"id": b["id"], "name": b.get("name", "未命名"),
+                        "account_mode": b.get("account_mode", "shared"),
+                        "profile_id": profile_id,
+                        "saved": (base / profile_id / "登录状态.json").exists(),
+                        "proxy": "独立固定代理" if b.get("proxy") else "继承目标代理"})
+    return {"mode": rule.get("account", {}).get("mode", "independent"),
+            "shared_saved": (base / "_shared" / "登录状态.json").exists(),
+            "sources": sources}
 
 @app.get("/api/targets/{target_id}/status")
 def status(target_id: str): return manager.status(target_id)

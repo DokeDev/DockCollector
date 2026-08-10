@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 from .captcha_solver import get_captcha_solver, png_width
-from .rules import parse_detail_html
+from .rules import account_profile_id, parse_detail_html
 
 
 OPERATION_LOCK_SCRIPT = r"""
@@ -407,7 +407,7 @@ class TargetRunner:
                     if self.stop_flag.is_set(): break
                     if not board.get("enabled", True): continue
                     proxy_arg = await self.resolve_proxy(board, rule.get("proxy", {}))
-                    profile = profiles_root / board["id"]
+                    profile = profiles_root / account_profile_id(rule, board)
                     profile.mkdir(parents=True, exist_ok=True)
                     browser_mode = rule.get("browser", {}).get("mode", "visible")
                     context = await pw.chromium.launch_persistent_context(

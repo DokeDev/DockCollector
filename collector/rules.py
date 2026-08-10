@@ -9,6 +9,16 @@ from bs4 import BeautifulSoup
 FIELDS = ["地区", "标题", "详细地址", "服务项目", "年龄容貌", "消费", "联系方式", "正文"]
 
 
+def account_profile_id(rule, board):
+    """返回页面来源实际使用的账号配置目录名。"""
+    mode = rule.get("account", {}).get("mode", "independent")
+    if mode == "shared":
+        return "_shared"
+    if mode == "mixed" and board.get("account_mode", "shared") != "independent":
+        return "_shared"
+    return board["id"]
+
+
 def clean(value):
     return re.sub(r"\s+", " ", value or "").strip()
 
@@ -95,6 +105,7 @@ def default_rule(target_id, folder, domain, adapter):
                     "selectors": ["img[src*='seccode']", "input[name*='seccode']", ".geetest_panel"],
                     "auto": True, "max_auto_tries": 3},
         "browser": {"mode": "visible"},
+        "account": {"mode": "shared"},
         "proxy": {"mode": "direct", "server": "", "username": "", "password": "",
                   "api_url": "", "api_method": "GET", "api_body": "", "api_json_path": "",
                   "api_header_name": "", "api_header_value": "", "api_scheme": "http",
