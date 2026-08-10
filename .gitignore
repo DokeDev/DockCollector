@@ -13,6 +13,7 @@ collector.db-*
 
 # 本机依赖与内置浏览器
 .vendor/
+.venv-macos/
 .browsers/
 .venv-windows/
 .browsers-windows/

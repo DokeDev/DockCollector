@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-if sys.platform != "win32":
+if sys.platform != "win32" and os.environ.get("DOCK_USE_VENDOR", "1") != "0":
     sys.path.insert(0, str(ROOT / ".vendor"))
 
 import uvicorn

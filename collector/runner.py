@@ -392,7 +392,7 @@ class TargetRunner:
         return value
 
     async def run(self):
-        if sys.platform != "win32":
+        if sys.platform != "win32" and os.environ.get("DOCK_USE_VENDOR", "1") != "0":
             sys.path.insert(0, str(self.root / ".vendor"))
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(self.root / ".browsers"))
         from playwright.async_api import async_playwright

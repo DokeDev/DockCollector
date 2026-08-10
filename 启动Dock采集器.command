@@ -5,9 +5,10 @@ set -u
 COLLECTOR_DIR="${0:A:h}"
 cd "$COLLECTOR_DIR" || exit 1
 
-export PYTHONPATH="$COLLECTOR_DIR/.vendor:$COLLECTOR_DIR"
+VENV_DIR="$COLLECTOR_DIR/.venv-macos"
 export PLAYWRIGHT_BROWSERS_PATH="$COLLECTOR_DIR/.browsers"
 export PYTHONPYCACHEPREFIX="/tmp/rule-collector-pycache"
+export DOCK_USE_VENDOR=0
 
 clear
 echo "========================================"
@@ -24,11 +25,30 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! python3 -c "import fastapi, uvicorn, playwright, bs4, openpyxl, ddddocr" >/dev/null 2>&1; then
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+  echo "[首次运行] 正在创建独立的 macOS 运行环境……"
+  if ! python3 -m venv "$VENV_DIR"; then
+    echo
+    echo "无法创建 Python 虚拟环境，请安装 python.org 提供的 Python 3.10 或更高版本。"
+    echo "按回车键关闭窗口。"
+    read -r
+    exit 1
+  fi
+fi
+
+DOCK_PYTHON="$VENV_DIR/bin/python"
+
+if ! "$DOCK_PYTHON" -c "import fastapi, uvicorn, playwright, bs4, openpyxl, ddddocr, PIL" >/dev/null 2>&1; then
   echo "[首次运行] 正在安装 Dock采集器运行组件……"
   echo "此过程需要联网，可能需要几分钟。"
-  mkdir -p "$COLLECTOR_DIR/.vendor"
-  if ! python3 -m pip install --upgrade --target "$COLLECTOR_DIR/.vendor" -r "$COLLECTOR_DIR/requirements.txt"; then
+  if ! "$DOCK_PYTHON" -m pip install --upgrade pip setuptools wheel; then
+    echo
+    echo "pip 更新失败，请检查网络连接和上方错误信息。"
+    echo "按回车键关闭窗口。"
+    read -r
+    exit 1
+  fi
+  if ! "$DOCK_PYTHON" -m pip install --upgrade -r "$COLLECTOR_DIR/requirements.txt"; then
     echo
     echo "运行组件安装失败，请检查网络连接和上方错误信息。"
     echo "按回车键关闭窗口。"
@@ -43,7 +63,7 @@ if ! find "$COLLECTOR_DIR/.browsers" -maxdepth 1 -type d -name 'chromium-*' -pri
   echo "[首次运行] 正在安装程序内置 Chromium……"
   echo "浏览器文件较大，请保持网络连接。"
   mkdir -p "$COLLECTOR_DIR/.browsers"
-  if ! python3 -m playwright install chromium; then
+  if ! "$DOCK_PYTHON" -m playwright install chromium; then
     echo
     echo "内置 Chromium 安装失败，请检查网络连接和上方错误信息。"
     echo "按回车键关闭窗口。"
@@ -77,7 +97,7 @@ echo
   done
 ) &
 
-python3 "$COLLECTOR_DIR/run.py"
+"$DOCK_PYTHON" "$COLLECTOR_DIR/run.py"
 collector_exit=$?
 
 echo

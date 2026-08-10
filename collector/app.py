@@ -2,12 +2,13 @@ import csv
 import copy
 import io
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-if sys.platform != "win32":
+if sys.platform != "win32" and os.environ.get("DOCK_USE_VENDOR", "1") != "0":
     sys.path.insert(0, str(ROOT / ".vendor"))
 
 from fastapi import FastAPI, HTTPException

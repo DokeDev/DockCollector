@@ -73,7 +73,7 @@ class LoginManager:
         return active[0] if active else {"state": "idle", "message": "尚未预登录"}
 
     async def _run(self, target_id, board_id, state):
-        if sys.platform != "win32":
+        if sys.platform != "win32" and os.environ.get("DOCK_USE_VENDOR", "1") != "0":
             sys.path.insert(0, str(self.root / ".vendor"))
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(self.root / ".browsers"))
         from playwright.async_api import async_playwright
