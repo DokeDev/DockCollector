@@ -15,19 +15,43 @@ echo "          Dock采集器"
 echo "========================================"
 echo
 
-if [[ ! -d "$COLLECTOR_DIR/.vendor/playwright" ]]; then
-  echo "缺少运行组件，请确认项目的 .vendor 目录完整。"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "未检测到 Python 3。"
+  echo "请先从 https://www.python.org/downloads/macos/ 安装 Python 3.10 或更高版本。"
+  echo "安装完成后重新双击本文件。"
   echo "按回车键关闭窗口。"
   read -r
   exit 1
 fi
 
-if [[ ! -d "$COLLECTOR_DIR/.browsers/chromium-1181" ]]; then
-  echo "缺少程序内置 Chromium 浏览器。"
-  echo "请先完成浏览器组件安装，然后重新启动。"
-  echo "按回车键关闭窗口。"
-  read -r
-  exit 1
+if ! python3 -c "import fastapi, uvicorn, playwright, bs4, openpyxl, ddddocr" >/dev/null 2>&1; then
+  echo "[首次运行] 正在安装 Dock采集器运行组件……"
+  echo "此过程需要联网，可能需要几分钟。"
+  mkdir -p "$COLLECTOR_DIR/.vendor"
+  if ! python3 -m pip install --upgrade --target "$COLLECTOR_DIR/.vendor" -r "$COLLECTOR_DIR/requirements.txt"; then
+    echo
+    echo "运行组件安装失败，请检查网络连接和上方错误信息。"
+    echo "按回车键关闭窗口。"
+    read -r
+    exit 1
+  fi
+  echo "运行组件安装完成。"
+  echo
+fi
+
+if ! find "$COLLECTOR_DIR/.browsers" -maxdepth 1 -type d -name 'chromium-*' -print -quit 2>/dev/null | grep -q .; then
+  echo "[首次运行] 正在安装程序内置 Chromium……"
+  echo "浏览器文件较大，请保持网络连接。"
+  mkdir -p "$COLLECTOR_DIR/.browsers"
+  if ! python3 -m playwright install chromium; then
+    echo
+    echo "内置 Chromium 安装失败，请检查网络连接和上方错误信息。"
+    echo "按回车键关闭窗口。"
+    read -r
+    exit 1
+  fi
+  echo "内置 Chromium 安装完成。"
+  echo
 fi
 
 if curl -fsS --max-time 1 "http://127.0.0.1:3780/api/targets" >/dev/null 2>&1; then

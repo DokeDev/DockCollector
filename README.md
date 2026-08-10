@@ -83,15 +83,7 @@ DockCollector 是一款本地运行、规则驱动的可视化网页采集工具
 
 ### macOS
 
-从源码首次运行时，在项目目录执行：
-
-```bash
-python3 -m pip install --target .vendor -r requirements.txt
-PYTHONPATH="$PWD/.vendor" PLAYWRIGHT_BROWSERS_PATH="$PWD/.browsers" \
-  python3 -m playwright install chromium
-```
-
-安装完成后双击 `启动Dock采集器.command`。也可以在终端中运行该文件；按 `Control+C` 停止服务。
+安装 Python 3.10 或更高版本后，双击 `启动Dock采集器.command`。首次运行时，启动器会自动安装 Python 依赖和程序内置 Chromium；准备完成后自动打开控制台。首次安装需要联网，后续可直接启动。也可以在终端中运行该文件；按 `Control+C` 停止服务。
 
 ### 命令行启动
 
