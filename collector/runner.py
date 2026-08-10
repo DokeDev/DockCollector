@@ -403,29 +403,42 @@ class TargetRunner:
         try:
             async with async_playwright() as pw:
                 self.status.update(state="running", message="正在采集")
-                for board in rule.get("boards", []):
-                    if self.stop_flag.is_set(): break
-                    if not board.get("enabled", True): continue
-                    proxy_arg = await self.resolve_proxy(board, rule.get("proxy", {}))
-                    profile = profiles_root / account_profile_id(rule, board)
-                    profile.mkdir(parents=True, exist_ok=True)
-                    browser_mode = rule.get("browser", {}).get("mode", "visible")
-                    context = await pw.chromium.launch_persistent_context(
-                        str(profile), headless=browser_mode == "silent",
-                        proxy=proxy_arg, viewport={"width": 1280, "height": 850})
-                    snapshot = profile / "登录状态.json"
-                    if snapshot.exists():
-                        try:
-                            saved = json.loads(snapshot.read_text(encoding="utf-8"))
-                            cookies = saved.get("cookies", [])
-                            if cookies: await context.add_cookies(cookies)
-                        except Exception as exc:
-                            self.store.event(self.target_id, "warning", f"登录状态载入失败：{exc}")
-                    page = context.pages[0] if context.pages else await context.new_page()
-                    await self.install_operation_lock(context, page)
-                    if browser_mode == "auto": await self.set_window_state(page, "minimized")
-                    await self.collect_board(page, board, rule, started)
-                    await context.close()
+                context = page = session_key = None
+                try:
+                    for board in rule.get("boards", []):
+                        if self.stop_flag.is_set(): break
+                        if not board.get("enabled", True): continue
+                        proxy_arg = await self.resolve_proxy(board, rule.get("proxy", {}))
+                        profile = profiles_root / account_profile_id(rule, board)
+                        profile.mkdir(parents=True, exist_ok=True)
+                        # 同一账号目录且代理完全一致时复用浏览器；代理变化时必须重启，防止出口串用。
+                        next_key = (str(profile.resolve()), json.dumps(proxy_arg, sort_keys=True))
+                        if context is None or next_key != session_key:
+                            if context is not None:
+                                await context.close()
+                                context = page = session_key = None
+                            browser_mode = rule.get("browser", {}).get("mode", "visible")
+                            context = await pw.chromium.launch_persistent_context(
+                                str(profile), headless=browser_mode == "silent",
+                                proxy=proxy_arg, viewport={"width": 1280, "height": 850})
+                            snapshot = profile / "登录状态.json"
+                            if snapshot.exists():
+                                try:
+                                    saved = json.loads(snapshot.read_text(encoding="utf-8"))
+                                    cookies = saved.get("cookies", [])
+                                    if cookies: await context.add_cookies(cookies)
+                                except Exception as exc:
+                                    self.store.event(self.target_id, "warning", f"登录状态载入失败：{exc}")
+                            page = context.pages[0] if context.pages else await context.new_page()
+                            await self.install_operation_lock(context, page)
+                            if browser_mode == "auto": await self.set_window_state(page, "minimized")
+                            session_key = next_key
+                        else:
+                            self.status["message"] = f"复用统一账号浏览器：{board.get('name', '未命名来源')}"
+                        await self.collect_board(page, board, rule, started)
+                finally:
+                    if context is not None:
+                        await context.close()
             self.status.update(state="stopped" if self.stop_flag.is_set() else "completed",
                                message="已停止" if self.stop_flag.is_set() else "采集完成")
         except Exception as exc:
