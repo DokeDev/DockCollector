@@ -69,31 +69,43 @@ PICKER_SCRIPT = r"""
 })();
 """
 
+STOP_PICKER_SCRIPT = r"""
+(() => {
+  if(window.__collectorStopPicker)return;window.__collectorStopPicker=true;
+  const selector=el=>{if(el.id)return '#'+CSS.escape(el.id);let a=[];while(el&&el.nodeType===1&&el!==document.documentElement){let s=el.tagName.toLowerCase(),c=[...el.classList].filter(x=>!x.startsWith('collector-')).slice(0,2);if(c.length)s+='.'+c.map(CSS.escape).join('.');let p=el.parentElement;if(p&&p.querySelectorAll(':scope > '+s).length>1)s+=`:nth-of-type(${[...p.children].filter(x=>x.tagName===el.tagName).indexOf(el)+1})`;a.unshift(s);if(document.querySelectorAll(a.join(' > ')).length===1)break;el=p}return a.join(' > ')};
+  const box=document.createElement('div'),tip=document.createElement('div');Object.assign(box.style,{position:'fixed',pointerEvents:'none',zIndex:'2147483647',border:'2px solid #e25b45',background:'#e25b4520'});Object.assign(tip.style,{position:'fixed',pointerEvents:'none',zIndex:'2147483647',background:'#7b271b',color:'#fff',padding:'7px 10px',borderRadius:'7px',font:'13px sans-serif'});document.documentElement.append(box,tip);
+  document.addEventListener('mousemove',e=>{let r=e.target.getBoundingClientRect();Object.assign(box.style,{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'});tip.style.left=Math.max(4,r.left)+'px';tip.style.top=Math.max(4,r.top-36)+'px';tip.textContent='点击设为停止判断元素：'+selector(e.target)},true);
+  document.addEventListener('click',async e=>{e.preventDefault();e.stopImmediatePropagation();let value={selector:selector(e.target),text:(e.target.innerText||e.target.textContent||'').trim().replace(/\s+/g,' ').slice(0,300)};tip.textContent='已选择，正在返回…';await window.__collectorStopPick(value);setTimeout(()=>window.close(),500)},true);
+})();
+"""
+
 LIST_PICKER_SCRIPT = r"""
 (() => {
   if(window.__collectorListPicker)return;window.__collectorListPicker=true;
   const selector=el=>{if(el.id)return '#'+CSS.escape(el.id);let a=[];while(el&&el.nodeType===1&&el!==document.documentElement){let s=el.tagName.toLowerCase(),c=[...el.classList].slice(0,2);if(c.length)s+='.'+c.map(CSS.escape).join('.');let p=el.parentElement;if(p&&p.querySelectorAll(':scope > '+s).length>1)s+=`:nth-of-type(${[...p.children].filter(x=>x.tagName===el.tagName).indexOf(el)+1})`;a.unshift(s);if(document.querySelectorAll(a.join(' > ')).length===1)break;el=p}return a.join(' > ')};
   const simple=el=>{if(el.id)return '#'+CSS.escape(el.id);let s=el.tagName.toLowerCase(),c=[...el.classList].slice(0,3);return s+(c.length?'.'+c.map(CSS.escape).join('.'):'')};
+  const relative=(el,row)=>{let s=simple(el);if(row.querySelectorAll(s).length===1)return s;let a=[];for(let n=el;n&&n!==row;n=n.parentElement){let p=simple(n),parent=n.parentElement;if(parent&&parent.querySelectorAll(':scope > '+p).length>1)p+=`:nth-of-type(${[...parent.children].filter(x=>x.tagName===n.tagName).indexOf(n)+1})`;a.unshift(p);if(row.querySelectorAll(a.join(' > ')).length===1)break}return a.join(' > ')};
   const repeated=el=>{for(let node=el,depth=0;node&&node!==document.body&&depth<8;node=node.parentElement,depth++){if(node.id&&node.id.startsWith('normalthread_'))return "tbody[id^='normalthread_']";let classes=[...node.classList].filter(x=>!/^active|selected|hover$/.test(x)).slice(0,3),candidates=[];if(classes.length)candidates.push(node.tagName.toLowerCase()+'.'+classes.map(CSS.escape).join('.'),'.'+classes.map(CSS.escape).join('.'));if(['TR','LI','ARTICLE'].includes(node.tagName))candidates.push(node.tagName.toLowerCase());for(let candidate of candidates){let count=0;try{count=document.querySelectorAll(candidate).length}catch(_){}if(count>=2&&count<=500)return candidate}}return selector(el)};
-  let step='row',rules={};const panel=document.createElement('div');Object.assign(panel.style,{position:'fixed',right:'12px',top:'12px',zIndex:'2147483647',width:'390px',background:'#10221b',color:'#fff',padding:'14px',borderRadius:'12px',boxShadow:'0 10px 35px #0006',font:'13px -apple-system,sans-serif'});panel.innerHTML='<b style="font-size:15px">列表规则识别器</b><div class="lp-help" style="margin:9px 0;color:#b8ccc2">第1步：点击任意一个完整列表项的内部</div><div class="lp-data" style="background:#fff;color:#173027;padding:9px;border-radius:8px;word-break:break-all;line-height:1.6"></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px"><button class="lp-row">重选列表项</button><button class="lp-link">重选详情入口</button><button class="lp-next">重选翻页</button></div><button class="lp-save" disabled style="width:100%;margin-top:10px;padding:9px;border:0;border-radius:7px;background:#137657;color:#fff">确认并保存三个规则</button>';document.documentElement.append(panel);
-  const help=panel.querySelector('.lp-help'),data=panel.querySelector('.lp-data'),save=panel.querySelector('.lp-save');const render=()=>{data.innerHTML=`列表项容器：${rules.row_selector||'未选择'}<br>详情入口：${rules.link_selector||'未选择'}<br>下一页/加载更多：${rules.next_selector||'未选择'}`;save.disabled=!(rules.row_selector&&rules.link_selector&&rules.next_selector)};render();
-  panel.querySelector('.lp-row').onclick=()=>{step='row';help.textContent='请重新点击任意一个完整列表项的内部'};panel.querySelector('.lp-link').onclick=()=>{step='link';help.textContent='请重新点击列表项中的详情链接'};panel.querySelector('.lp-next').onclick=()=>{step='next';help.textContent='请重新点击“下一页”或“加载更多”链接/按钮'};
-  document.addEventListener('click',e=>{if(panel.contains(e.target))return;e.preventDefault();e.stopImmediatePropagation();if(step==='row'){let discuz=e.target.closest("tbody[id^='normalthread_']");rules.row_selector=discuz?'tbody[id^="normalthread_"]':repeated(e.target);step='link';help.textContent=`已识别 ${document.querySelectorAll(rules.row_selector).length} 个重复列表项：${rules.row_selector}。第2步：点击其中的详情入口`}else if(step==='link'){let link=e.target.closest('a[href]');if(!link){help.textContent='这里不是链接，请点击列表项中可进入详情的标题或按钮';return}rules.link_selector=simple(link);step='next';help.textContent='第3步：点击“下一页”或“加载更多”'}else if(step==='next'){let next=e.target.closest('a[href],button');if(!next){help.textContent='这里不是翻页链接/按钮，请点击真正的“下一页”或“加载更多”';return}rules.next_selector=selector(next);step='done';help.textContent=`识别完成：匹配 ${document.querySelectorAll(rules.row_selector).length} 个列表项，请确认保存`}render()},true);
+  let rules={...(window.__collectorExistingListRules||{})},hasSaved=!!(rules.row_selector||rules.link_selector||rules.time_selector||rules.next_selector),step=hasSaved?'done':'row';const panel=document.createElement('div');Object.assign(panel.style,{position:'fixed',right:'12px',top:'12px',zIndex:'2147483647',width:'410px',background:'#10221b',color:'#fff',padding:'14px',borderRadius:'12px',boxShadow:'0 10px 35px #0006',font:'13px -apple-system,sans-serif'});panel.innerHTML=`<b style="font-size:15px">列表规则修正器</b><div class="lp-help" style="margin:9px 0;color:#b8ccc2">${hasSaved?'已载入当前保存的规则；点击下方对应按钮，只重选需要修正的项目。':'尚无完整规则，请从列表项开始依次选择。'}</div><div class="lp-data" style="background:#fff;color:#173027;padding:9px;border-radius:8px;word-break:break-all;line-height:1.6"></div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:8px"><button class="lp-row">修正列表项</button><button class="lp-link">修正详情入口</button><button class="lp-time">修正列表时间</button><button class="lp-next">修正翻页</button></div><button class="lp-save" disabled style="width:100%;margin-top:10px;padding:9px;border:0;border-radius:7px;background:#137657;color:#fff">保存修正后的规则</button>`;document.documentElement.append(panel);
+  const help=panel.querySelector('.lp-help'),data=panel.querySelector('.lp-data'),save=panel.querySelector('.lp-save');const render=()=>{data.innerHTML=`列表项容器：${rules.row_selector||'未选择'}<br>详情入口：${rules.link_selector||'未选择'}<br>列表时间：${rules.time_selector||'未选择'}${rules.time_preview?'（示例：'+rules.time_preview+'）':''}<br>下一页/加载更多：${rules.next_selector||'未选择'}`;save.disabled=!(rules.row_selector&&rules.link_selector&&rules.time_selector&&rules.next_selector)};render();
+  panel.querySelector('.lp-row').onclick=()=>{step='row';help.textContent='请重新点击任意一个完整列表项的内部'};panel.querySelector('.lp-link').onclick=()=>{step='link';help.textContent='请重新点击列表项中的详情链接'};panel.querySelector('.lp-time').onclick=()=>{step='time';help.textContent='请点击列表项中代表发布时间的文字'};panel.querySelector('.lp-next').onclick=()=>{step='next';help.textContent='请重新点击“下一页”或“加载更多”链接/按钮'};
+  document.addEventListener('click',e=>{if(panel.contains(e.target))return;e.preventDefault();e.stopImmediatePropagation();if(step==='row'){let discuz=e.target.closest("tbody[id^='normalthread_']");rules.row_selector=discuz?'tbody[id^="normalthread_"]':repeated(e.target);step='link';help.textContent=`已识别 ${document.querySelectorAll(rules.row_selector).length} 个重复列表项。第2步：点击其中的详情入口`}else if(step==='link'){let link=e.target.closest('a[href]');if(!link){help.textContent='这里不是链接，请点击列表项中可进入详情的标题或按钮';return}let row=link.closest(rules.row_selector);rules.link_selector=row?relative(link,row):simple(link);step='time';help.textContent='第3步：点击同一列表项中真正代表发布时间的文字'}else if(step==='time'){let row=e.target.closest(rules.row_selector);if(!row){help.textContent='请在已识别的列表项内部选择时间';return}rules.time_selector=relative(e.target,row);rules.time_preview=(e.target.innerText||e.target.textContent||'').trim().replace(/\s+/g,' ');step='next';help.textContent='第4步：点击“下一页”或“加载更多”'}else if(step==='next'){let next=e.target.closest('a[href],button');if(!next){help.textContent='这里不是翻页链接/按钮，请点击真正的“下一页”或“加载更多”';return}rules.next_selector=selector(next);step='done';help.textContent=`识别完成：匹配 ${document.querySelectorAll(rules.row_selector).length} 个列表项，请确认保存`}render()},true);
   save.onclick=async()=>{save.disabled=true;save.textContent='正在保存…';let result=await window.__collectorListPick({...rules,save:true});save.textContent=result.message||'已保存';setTimeout(()=>window.close(),1000)};
 })();
 """
 
 AUTO_LIST_SCRIPT = r"""
 () => {
-  const css=s=>CSS.escape(s), simple=el=>{let c=[...el.classList].filter(Boolean).slice(0,2);return el.tagName.toLowerCase()+(c.length?'.'+c.map(css).join('.'):'')};
+  const css=s=>CSS.escape(s), simple=el=>{let c=[...el.classList].filter(Boolean).slice(0,2);return el.tagName.toLowerCase()+(c.length?'.'+c.map(css).join('.'):'')},relative=(el,row)=>{let s=simple(el);if(row.querySelectorAll(s).length===1)return s;let a=[];for(let n=el;n&&n!==row;n=n.parentElement){let p=simple(n),parent=n.parentElement;if(parent&&parent.querySelectorAll(':scope > '+p).length>1)p+=`:nth-of-type(${[...parent.children].filter(x=>x.tagName===n.tagName).indexOf(n)+1})`;a.unshift(p);if(row.querySelectorAll(a.join(' > ')).length===1)break}return a.join(' > ')};
   let rowSelector='';
   if(document.querySelectorAll("tbody[id^='normalthread_']").length>=2)rowSelector='tbody[id^="normalthread_"]';
   if(!rowSelector){let groups=new Map();document.querySelectorAll('article,tr,li,div').forEach(el=>{let key=simple(el);if(key==='div'||key==='li')return;let a=groups.get(key)||[];a.push(el);groups.set(key,a)});let best={score:-1,key:''};for(let [key,els] of groups){if(els.length<2||els.length>300)continue;let sample=els.slice(0,30),links=sample.filter(x=>x.querySelector('a[href]')).length,text=sample.reduce((n,x)=>n+(x.innerText||'').trim().length,0)/sample.length,time=sample.filter(x=>/昨天|小时前|分钟前|天前|\d{4}[-/]\d{1,2}/.test(x.innerText||'')).length;let score=els.length+links*4+time*5+Math.min(text,300)/30;if(text<15)score-=30;if(score>best.score)best={score,key}}rowSelector=best.key}
   if(!rowSelector)return {ok:false,message:'没有找到可靠的重复列表项容器'};
   let rows=[...document.querySelectorAll(rowSelector)],linkScores=new Map();rows.slice(0,50).forEach(row=>row.querySelectorAll('a[href]').forEach(a=>{let href=a.getAttribute('href')||'',text=(a.innerText||'').trim();if(!href||href.startsWith('javascript:')||href==='#'||text.length<2)return;let key=simple(a),score=(linkScores.get(key)||0)+1+Math.min(text.length,40)/20;if(a.classList.contains('xst'))score+=20;linkScores.set(key,score)}));let linkSelector=[...linkScores].sort((a,b)=>b[1]-a[1])[0]?.[0]||'a[href]';
+  const timeRe=/(?:昨天|前天)(?:\s*\d{1,2}:\d{2})?|\d+\s*(?:秒|分钟|小时|天|周|个月|月|年)前|\d{4}[-/.年]\d{1,2}(?:[-/.月]\d{1,2})?/;let timeScores=new Map();rows.slice(0,50).forEach(row=>row.querySelectorAll('*').forEach(el=>{if(el.children.length)return;let text=(el.innerText||el.textContent||'').trim().replace(/\s+/g,' ');if(!text||text.length>40||!timeRe.test(text))return;let key=relative(el,row),old=timeScores.get(key)||{score:0,values:[]};old.score+=10-Math.min(text.length,30)/10;old.values.push(text);timeScores.set(key,old)}));let timeEntry=[...timeScores].sort((a,b)=>b[1].score-a[1].score)[0],timeSelector=timeEntry?.[0]||'',timeValues=timeEntry?.[1].values.slice(0,5)||[];
   let next=document.querySelector('a[rel="next"],a.nxt');if(!next)next=[...document.querySelectorAll('a[href],button')].find(x=>/^(下一页|下页|加载更多|更多)$/.test((x.innerText||'').trim()));let nextSelector=next?(next.matches('a.nxt')?'a.nxt':simple(next)):'';
-  let previews=rows.slice(0,5).map(row=>{let a=row.querySelector(linkSelector);return {text:(a?.innerText||row.innerText||'').trim().replace(/\s+/g,' ').slice(0,80),href:a?.href||''}});
-  return {ok:true,row_selector:rowSelector,link_selector:linkSelector,next_selector:nextSelector,row_count:rows.length,previews};
+  let previews=rows.slice(0,5).map(row=>{let a=row.querySelector(linkSelector),t=timeSelector?row.querySelector(timeSelector):null;return {text:(a?.innerText||row.innerText||'').trim().replace(/\s+/g,' ').slice(0,80),time:(t?.innerText||t?.textContent||'').trim().replace(/\s+/g,' '),href:a?.href||''}});
+  return {ok:true,row_selector:rowSelector,link_selector:linkSelector,time_selector:timeSelector,time_values:timeValues,next_selector:nextSelector,row_count:rows.length,previews};
 }
 """
 
@@ -224,17 +236,33 @@ class PickerManager:
                 await page.expose_binding("__collectorPick", picked)
                 async def list_picked(_source, value):
                     latest = self.store.target(target_id)
-                    for key in ("row_selector", "link_selector", "next_selector"):
+                    for key in ("row_selector", "link_selector", "time_selector", "next_selector"):
                         latest["rule"]["list"][key] = value[key]
                     self.store.save_target(target_id, latest)
                     value["saved"] = True; state["selected"] = value
                     state["message"] = "列表规则已保存"
                     return {"ok": True, "message": state["message"]}
                 await page.expose_binding("__collectorListPick", list_picked)
+                async def stop_picked(_source, value):
+                    value["stop_rule"] = True
+                    state["selected"] = value
+                    state["message"] = "已选择停止条件元素"
+                    return {"ok": True}
+                await page.expose_binding("__collectorStopPick", stop_picked)
                 async def install_picker():
                     try:
                         if mode == "list_auto": return
-                        await page.evaluate(LIST_PICKER_SCRIPT if mode == "list" else PICKER_SCRIPT)
+                        if mode == "list":
+                            listing = self.store.target(target_id)["rule"].get("list", {})
+                            await page.evaluate(
+                                "rules => { window.__collectorExistingListRules = rules; }",
+                                {key: listing.get(key, "") for key in
+                                 ("row_selector", "link_selector", "time_selector", "next_selector")})
+                            await page.evaluate(LIST_PICKER_SCRIPT)
+                        elif mode == "stop":
+                            await page.evaluate(STOP_PICKER_SCRIPT)
+                        else:
+                            await page.evaluate(PICKER_SCRIPT)
                         state["panel_ready"] = True
                     except Exception as exc:
                         state["panel_ready"] = False

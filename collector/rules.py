@@ -93,6 +93,7 @@ def default_rule(target_id, folder, domain, adapter):
         "list": {
             "row_selector": "#threadlisttableid tbody[id^='normalthread_'], #threadlisttableid tbody",
             "link_selector": "a.xst, a.s.xst, a[href*='thread-']",
+            "time_selector": "",
             "required_text": "昨天",
             "next_selector": "a.nxt",
         },
@@ -100,7 +101,7 @@ def default_rule(target_id, folder, domain, adapter):
                       "retry_limit": 2, "backoff_seconds": 300},
         "limits": {"max_list_pages": 10, "max_details": 20, "max_minutes": 60,
                    "max_captcha": 3, "max_errors": 5, "empty_pages": 1},
-        "stop": {"page_contains": [], "detail_contains": [], "field_name": "", "field_contains": ""},
+        "stop": {"rules": []},
         "captcha": {"texts": ["验证码", "安全验证", "完成验证", "请输入验证码"],
                     "selectors": ["img[src*='seccode']", "input[name*='seccode']", ".geetest_panel"],
                     "auto": True, "max_auto_tries": 3},

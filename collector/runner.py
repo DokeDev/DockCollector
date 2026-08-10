@@ -52,6 +52,7 @@ class TargetRunner:
         self.stop_flag = threading.Event()
         self.pause_flag = threading.Event()
         self.pause_flag.set()
+        self.condition_completed = False
         self.status = {"state": "starting", "board": "", "url": "", "pages": 0,
                        "opened": 0, "saved": 0, "skipped": 0, "errors": 0,
                        "captcha": 0, "message": "正在启动"}
@@ -73,6 +74,40 @@ class TargetRunner:
     async def wait_gate(self):
         while not self.pause_flag.is_set() and not self.stop_flag.is_set():
             await asyncio.sleep(1)
+
+    async def matched_stop_rule(self, page, data, rule, phase):
+        for item in rule.get("stop", {}).get("rules", []):
+            if not item.get("enabled", True) or item.get("phase", "detail") != phase:
+                continue
+            kind, operator = item.get("kind", "field"), item.get("operator", "contains")
+            value, present, actual = str(item.get("value", "")), True, ""
+            if operator in {"contains", "equals", "not_contains"} and not value:
+                continue
+            if kind == "field":
+                field_name = item.get("field", "")
+                present = field_name in (data or {})
+                actual = str((data or {}).get(field_name, ""))
+            elif kind == "page_text":
+                actual = await page.locator("body").inner_text()
+            elif kind == "element":
+                locator = page.locator(item.get("selector", "")).first
+                present = bool(item.get("selector")) and await locator.count() > 0
+                actual = (await locator.inner_text()).strip() if present else ""
+            matched = {"contains": value in actual, "equals": actual == value,
+                       "not_contains": value not in actual, "exists": present,
+                       "missing": not present, "empty": not actual.strip()}.get(operator, False)
+            if matched:
+                return item
+        return None
+
+    def stop_by_rule(self, item):
+        scope = item.get("scope", "board")
+        label = item.get("name") or item.get("field") or item.get("selector") or "停止条件"
+        self.status["message"] = f"命中停止条件：{label}"
+        if scope == "target":
+            self.condition_completed = True
+            self.stop_flag.set()
+        return True
 
     async def captcha_present(self, page, cfg):
         body = await page.locator("body").inner_text(timeout=5000)
@@ -452,8 +487,11 @@ class TargetRunner:
                         await context.close()
                     if browser is not None:
                         await browser.close()
-            self.status.update(state="stopped" if self.stop_flag.is_set() else "completed",
-                               message="已停止" if self.stop_flag.is_set() else "采集完成")
+            if self.condition_completed:
+                self.status.update(state="completed")
+            else:
+                self.status.update(state="stopped" if self.stop_flag.is_set() else "completed",
+                                   message="已停止" if self.stop_flag.is_set() else "采集完成")
         except Exception as exc:
             self.status.update(state="error", message=str(exc), errors=self.status["errors"] + 1)
             self.store.event(self.target_id, "error", str(exc))
@@ -470,19 +508,31 @@ class TargetRunner:
             await page.goto(url, wait_until="domcontentloaded", timeout=int(freq["timeout_seconds"] * 1000))
             await self.handle_captcha(page, rule); await self.wait_gate()
             page_text = await page.locator("body").inner_text()
-            if any(x in page_text for x in rule.get("stop", {}).get("page_contains", [])):
-                self.status["message"] = "命中列表页结束条件"; return
+            stop_rule = await self.matched_stop_rule(page, None, rule, "list")
+            if stop_rule:
+                self.stop_by_rule(stop_rule); return
             self.status["pages"] += 1
             rows = page.locator(rule["list"]["row_selector"])
             matched = []
             for i in range(await rows.count()):
                 row = rows.nth(i); text = await row.inner_text()
-                if rule["list"]["required_text"] not in text:
+                required_text = str(rule["list"].get("required_text", ""))
+                time_selector = str(rule["list"].get("time_selector", "")).strip()
+                if time_selector:
+                    time_node = row.locator(time_selector).first
+                    if not await time_node.count():
+                        self.status["skipped"] += 1; continue
+                    list_time = (await time_node.inner_text()).strip()
+                else:
+                    # 兼容尚未设置时间元素的旧规则；只保存包含值所在的文本行。
+                    list_time = next((x.strip() for x in text.splitlines()
+                                      if required_text and required_text in x), "")
+                if required_text and required_text not in list_time:
                     self.status["skipped"] += 1; continue
                 link = row.locator(rule["list"]["link_selector"]).first
                 if not await link.count(): continue
                 matched.append((await link.inner_text(), urljoin(page.url, await link.get_attribute("href")),
-                                next((x for x in text.split() if "昨天" in x), "昨天")))
+                                list_time))
             empty = empty + 1 if not matched else 0
             for title, detail_url, list_time in matched:
                 if self.stop_flag.is_set() or self.status["opened"] >= int(limits["max_details"]): return
@@ -496,9 +546,9 @@ class TargetRunner:
                 html = await page.content(); data = parse_detail_html(html, rule, detail_url)
                 if self.store.add_result(self.target_id, board["name"], detail_url, title, list_time, data):
                     self.status["saved"] += 1
-                stop = rule.get("stop", {})
-                if stop.get("detail_contains") and any(x in html for x in stop["detail_contains"]): return
-                if stop.get("field_name") and stop.get("field_contains") in data.get(stop["field_name"], ""): return
+                stop_rule = await self.matched_stop_rule(page, data, rule, "detail")
+                if stop_rule:
+                    self.stop_by_rule(stop_rule); return
                 await page.go_back(wait_until="domcontentloaded")
             if empty >= int(limits["empty_pages"]): return
             nxt = page.locator(rule["list"]["next_selector"]).first

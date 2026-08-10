@@ -73,6 +73,40 @@ def normalize_browser_configs():
             store.save_target(target["id"], target)
 
 
+def normalize_list_configs():
+    for target in store.targets():
+        listing = target["rule"].setdefault("list", {})
+        if "time_selector" not in listing:
+            listing["time_selector"] = ""
+            store.save_target(target["id"], target)
+
+
+def normalize_stop_configs():
+    for target in store.targets():
+        stop = target["rule"].setdefault("stop", {})
+        if "rules" in stop:
+            valid = [item for item in stop["rules"]
+                     if item.get("operator") not in {"contains", "equals", "not_contains"}
+                     or str(item.get("value", "")).strip()]
+            if valid != stop["rules"]:
+                stop["rules"] = valid
+                store.save_target(target["id"], target)
+            continue
+        rules = []
+        for value in stop.get("page_contains", []):
+            rules.append({"enabled": True, "kind": "page_text", "phase": "list",
+                          "operator": "contains", "value": value, "scope": "board"})
+        for value in stop.get("detail_contains", []):
+            rules.append({"enabled": True, "kind": "page_text", "phase": "detail",
+                          "operator": "contains", "value": value, "scope": "board"})
+        if stop.get("field_name") and stop.get("field_contains"):
+            rules.append({"enabled": True, "kind": "field", "phase": "detail",
+                          "field": stop["field_name"], "operator": "contains",
+                          "value": stop.get("field_contains", ""), "scope": "board"})
+        target["rule"]["stop"] = {"rules": rules}
+        store.save_target(target["id"], target)
+
+
 def normalize_captcha_configs():
     for target in store.targets():
         captcha = target["rule"].setdefault("captcha", {})
@@ -105,7 +139,7 @@ def normalize_account_configs():
         if changed: store.save_target(target["id"], target)
 
 
-normalize_rule_names(); normalize_picker_sources(); normalize_proxy_configs(); normalize_browser_configs(); normalize_captcha_configs(); normalize_board_ids(); normalize_account_configs(); manager = RunnerManager(ROOT, store); picker = PickerManager(ROOT, store); login = LoginManager(ROOT, store, manager)
+normalize_rule_names(); normalize_picker_sources(); normalize_proxy_configs(); normalize_browser_configs(); normalize_list_configs(); normalize_stop_configs(); normalize_captcha_configs(); normalize_board_ids(); normalize_account_configs(); manager = RunnerManager(ROOT, store); picker = PickerManager(ROOT, store); login = LoginManager(ROOT, store, manager)
 
 @app.get("/api/targets")
 def targets():
