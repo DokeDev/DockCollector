@@ -10,7 +10,7 @@ FIELDS = ["地区", "标题", "详细地址", "服务项目", "年龄容貌", "�
 
 
 def account_profile_id(rule, board):
-    """返回页面来源实际使用的账号配置目录名。"""
+    """返回数据列表实际使用的账号配置目录名。"""
     mode = rule.get("account", {}).get("mode", "independent")
     if mode == "shared":
         return "_shared"

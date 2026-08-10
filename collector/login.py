@@ -51,7 +51,7 @@ class LoginManager:
         if board_id == "_shared" and boards:
             board = next((x for x in boards if x.get("enabled", True)), boards[0])
         if not board:
-            return {"state": "error", "message": "请选择有效的页面来源"}
+            return {"state": "error", "message": "请选择有效的数据列表"}
         key = (target_id, board_id)
         old = self.sessions.get(key)
         if old and old.get("state") in ("starting", "running"):
@@ -117,7 +117,7 @@ class LoginManager:
         if board_id == "_shared" and boards:
             board = next((x for x in boards if x.get("enabled", True)), boards[0])
         if not board:
-            state.update(state="error", message="页面来源不存在"); return
+            state.update(state="error", message="数据列表不存在"); return
         profile_id = "_shared" if board_id == "_shared" else account_profile_id(rule, board)
         profile = self.root / rule["folder"] / "浏览器数据" / profile_id
         profile.mkdir(parents=True, exist_ok=True)

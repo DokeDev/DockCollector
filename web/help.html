@@ -14,16 +14,16 @@
 </head>
 <body id="top"><div class="layout">
   <aside><b>Dock采集器配置说明</b>
-    <a href="#source">页面来源</a><a href="#filter">列表筛选</a><a href="#fields">字段提取</a>
+    <a href="#source">数据列表</a><a href="#filter">列表筛选</a><a href="#fields">字段提取</a>
     <a href="#frequency">访问频率</a><a href="#limits">读取上限</a><a href="#stop">结束条件</a>
     <a href="#account">账号与代理</a><a href="#browser">运行模式</a><a href="#captcha">验证码</a>
   </aside>
   <main><h1>配置说明</h1><p class="lead">每项设置的作用范围、触发时机和常见用法。修改后请点击“保存设置”，运行中的任务通常在下次启动时读取新配置。</p>
 
-  <section id="source"><h2>页面来源</h2><div class="group">
-    <article class="item"><h3>启用</h3><p>控制本次任务是否处理该来源。关闭只会跳过，不会删除规则、账号或历史结果。</p><span class="scope">作用范围：单个来源</span></article>
-    <article class="item"><h3>来源名称</h3><p>用于控制台状态、结果版块列和账号管理中的显示名称，不参与网页定位。</p></article>
-    <article class="item"><h3>列表页地址</h3><p>该来源开始采集的入口地址。多个来源按照当前排序依次执行。</p><span class="scope">作用范围：单个来源</span></article>
+  <section id="source"><h2>数据列表</h2><div class="group">
+    <article class="item"><h3>启用</h3><p>控制本次任务是否处理该数据列表。关闭只会跳过，不会删除规则、账号或历史结果。</p><span class="scope">作用范围：单个数据列表</span></article>
+    <article class="item"><h3>列表名称</h3><p>用于控制台状态、结果版块列和账号管理中的显示名称，不参与网页定位。</p></article>
+    <article class="item"><h3>数据列表页地址</h3><p>该数据列表开始采集的入口地址。多个数据列表按照当前排序依次执行。</p><span class="scope">作用范围：单个数据列表</span></article>
     <article class="item"><h3>独立代理</h3><p>填写后覆盖目标代理；留空则继承目标代理。不同独立代理不能复用同一个浏览器进程。</p></article>
   </div></section>
 
@@ -31,7 +31,7 @@
     <article class="item"><h3>列表项容器 CSS 选择器</h3><p>定义“一条待判断记录”的外层元素。例如 Discuz 常见规则为 <code>tbody[id^="normalthread_"]</code>。必含文字和详情链接都在该容器内部查找。</p></article>
     <article class="item"><h3>详情链接 CSS 选择器</h3><p>在每个列表项内部定位详情入口。如果选中的是链接元素，程序读取其 <code>href</code>；字段提取中也可通过属性方式保存链接。</p></article>
     <article class="item"><h3>必须包含的列表文本</h3><p>列表项包含该文字才打开详情。例如填写“昨天”，只判断列表项，不会因为详情正文出现“昨天”而采集。</p></article>
-    <article class="item"><h3>下一页 CSS 选择器</h3><p>当前列表页处理完成后用于定位下一页或加载更多链接。找不到该元素时结束当前来源。</p></article>
+    <article class="item"><h3>下一页 CSS 选择器</h3><p>当前列表页处理完成后用于定位下一页或加载更多链接。找不到该元素时结束当前数据列表。</p></article>
   </div></section>
 
   <section id="fields"><h2>字段提取</h2><div class="group">
@@ -39,7 +39,7 @@
     <article class="item"><h3>提取方式</h3><p><code>css</code> 使用 CSS 选择器；<code>label_next</code> 查找标签后的相邻元素；<code>discuz_showhide</code> 读取 Discuz 隐藏内容；<code>breadcrumb</code> 读取面包屑；<code>body_after_fields</code> 清理结构化字段后保留正文。</p></article>
     <article class="item"><h3>选择器或标签文字</h3><p>根据提取方式填写 CSS 选择器或页面上的字段标签。可通过可视化规则拾取器生成。</p></article>
     <article class="item"><h3>属性</h3><p>留空时提取元素文字；填写 <code>href</code>、<code>src</code> 等属性时保存属性值。需要采集链接时使用 <code>href</code>。</p></article>
-    <article class="item"><h3>拾取器页面来源与浏览器账号</h3><p>页面下拉框显示已添加的“页面来源规则”，也可以临时输入完整网页地址。选择页面来源规则时，浏览器账号会自动切换到该来源实际使用的统一账号或独立账号。账号也可手动改为统一账号、游客状态或其他独立账号。</p></article>
+    <article class="item"><h3>内容页网址与浏览器账号</h3><p>字段拾取器不再选择数据列表页。请直接填写需要提取字段的完整内容页网址，再选择统一账号、游客状态或某个数据列表的独立账号后打开。网址必须以 <code>http://</code> 或 <code>https://</code> 开头。</p></article>
   </div></section>
 
   <section id="frequency"><h2>访问频率</h2><div class="group">
@@ -51,25 +51,25 @@
   </div></section>
 
   <section id="limits"><h2>读取上限</h2><div class="group">
-    <article class="item"><h3>最大列表页</h3><p>每个页面来源最多读取的列表页数。来源1达到上限后继续来源2，并重新计算页数上限。</p><span class="scope">作用范围：单个来源</span></article>
-    <article class="item"><h3>最大详情数</h3><p>当前任务所有来源累计允许打开的详情总数，不是单个来源上限。例如设置20，来源1打开12条后，其他来源合计只剩8条额度。</p><span class="scope">作用范围：整个目标任务</span></article>
+    <article class="item"><h3>最大列表页</h3><p>每个数据列表最多读取的列表页数。列表1达到上限后继续列表2，并重新计算页数上限。</p><span class="scope">作用范围：单个数据列表</span></article>
+    <article class="item"><h3>最大详情数</h3><p>当前任务所有数据列表累计允许打开的详情总数，不是单个数据列表上限。例如设置20，列表1打开12条后，其他数据列表合计只剩8条额度。</p><span class="scope">作用范围：整个目标任务</span></article>
     <article class="item"><h3>最长运行（分钟）</h3><p>从目标任务启动开始计算的总运行时间，达到后停止任务，包括等待间隔和页面加载时间。</p><span class="scope">作用范围：整个目标任务</span></article>
-    <article class="item"><h3>连续空页停止</h3><p>连续多少个列表页没有找到符合筛选条件的内容后结束当前来源。找到匹配内容时计数清零。设置1表示第一张无匹配页面就结束。</p><span class="scope">作用范围：单个来源</span></article>
+    <article class="item"><h3>连续空页停止</h3><p>连续多少个列表页没有找到符合筛选条件的内容后结束当前数据列表。找到匹配内容时计数清零。设置1表示第一张无匹配页面就结束。</p><span class="scope">作用范围：单个数据列表</span></article>
     <article class="item"><h3>验证码上限</h3><p>任务中检测到验证码的累计次数。无论自动或人工是否处理成功都会计数，达到上限后停止任务。</p><span class="scope">作用范围：整个目标任务</span></article>
     <article class="item"><h3>连续错误上限</h3><p>设计用于连续页面加载或采集异常的停止阈值；成功加载后应清零。它与验证码次数分开统计。</p><span class="scope">当前状态：配置已保留，连续错误链路仍在完善</span></article>
   </div></section>
 
   <section id="stop"><h2>内容结束条件</h2><div class="group">
     <article class="item"><h3>命中字段名</h3><p>选择需要检查的提取字段名称，例如“正文”或“标题”。应与字段提取规则中的名称完全一致。</p></article>
-    <article class="item"><h3>字段包含即停止</h3><p>指定字段的提取结果包含该文字时结束当前来源。需要同时填写“命中字段名”才会生效。</p></article>
-    <article class="item"><h3>详情包含文本</h3><p>详情页面原始 HTML 包含任意指定文本时结束当前来源。多个条件使用逗号分隔。</p></article>
+    <article class="item"><h3>字段包含即停止</h3><p>指定字段的提取结果包含该文字时结束当前数据列表。需要同时填写“命中字段名”才会生效。</p></article>
+    <article class="item"><h3>详情包含文本</h3><p>详情页面原始 HTML 包含任意指定文本时结束当前数据列表。多个条件使用逗号分隔。</p></article>
   </div></section>
 
   <section id="account"><h2>账号与代理</h2><div class="group">
-    <article class="item"><h3>所有来源使用统一账号</h3><p>所有来源共用一个浏览器登录状态。账号目录和代理一致时复用同一个 Chromium 连续采集。</p></article>
-    <article class="item"><h3>每个来源使用独立账号</h3><p>每条来源拥有独立浏览器配置、Cookie 和缓存，适合来源必须使用不同账号的情况。</p></article>
-    <article class="item"><h3>混合模式</h3><p>默认继承统一账号，个别来源可切换为独立账号。账号和代理分别继承，因此同一账号也可以搭配不同来源代理。</p></article>
-    <article class="item"><h3>直连、固定代理与代理 API</h3><p>直连使用本机网络；固定代理始终使用配置地址；代理 API 在启动来源前请求代理地址。API 可设置请求方式、认证头、POST 正文、JSON 路径和重试次数。</p></article>
+    <article class="item"><h3>所有数据列表使用统一账号</h3><p>所有数据列表共用一个浏览器登录状态。账号目录和代理一致时复用同一个 Chromium 连续采集。</p></article>
+    <article class="item"><h3>每个数据列表使用独立账号</h3><p>每条数据列表拥有独立浏览器配置、Cookie 和缓存，适合数据列表必须使用不同账号的情况。</p></article>
+    <article class="item"><h3>混合模式</h3><p>默认继承统一账号，个别数据列表可切换为独立账号。账号和代理分别继承，因此同一账号也可以搭配不同数据列表代理。</p></article>
+    <article class="item"><h3>直连、固定代理与代理 API</h3><p>直连使用本机网络；固定代理始终使用配置地址；代理 API 在启动数据列表前请求代理地址。API 可设置请求方式、认证头、POST 正文、JSON 路径和重试次数。</p></article>
   </div></section>
 
   <section id="browser"><h2>运行模式</h2><div class="group">
