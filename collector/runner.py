@@ -62,6 +62,9 @@ class TargetRunner:
         self.loop = None
         self.active_context = None
         self.active_browser = None
+        self.active_page = None
+        self.manual_intervention = False
+        self.failure_message = ""
 
     def start(self):
         self.thread = threading.Thread(target=lambda: asyncio.run(self.run()), daemon=True)
@@ -71,7 +74,29 @@ class TargetRunner:
         self.pause_flag.clear(); self.status.update(state="paused", message=message)
 
     def resume(self):
+        if self.manual_intervention:
+            self.status.update(state="paused", message="等待手动完成验证码")
+            if self.loop and self.loop.is_running():
+                try:
+                    asyncio.run_coroutine_threadsafe(self._restore_manual_page(), self.loop)
+                except Exception:
+                    pass
+            return
         self.pause_flag.set(); self.status.update(state="running", message="继续采集")
+
+    async def _restore_manual_page(self):
+        page = self.active_page
+        if page is None or page.is_closed():
+            self.failure_message = "验证浏览器已关闭，请重新开始任务"
+            self.stop_flag.set(); self.pause_flag.set()
+            self.status.update(state="error", message=self.failure_message)
+            return
+        await self.set_operation_lock(page, False)
+        try:
+            await self.set_window_state(page, "normal")
+            await page.bring_to_front()
+        except Exception:
+            pass
 
     def stop(self):
         self.stop_flag.set(); self.pause_flag.set(); self.status.update(state="stopping", message="正在停止")
@@ -85,6 +110,7 @@ class TargetRunner:
     async def _close_active_browser(self):
         context, browser = self.active_context, self.active_browser
         self.active_context = self.active_browser = None
+        self.active_page = None
         if context is not None:
             try:
                 await context.close()
@@ -267,16 +293,28 @@ class TargetRunner:
         message = ("检测到验证码；后台静默模式无法显示页面，请停止后切换运行模式"
                    if browser_mode == "silent" else "检测到验证码，请在浏览器中手动完成")
         self.pause(message)
+        self.manual_intervention = True
         self.store.event(self.target_id, "warning", f"验证码暂停：{page.url}")
         if self.status["captcha"] >= int(rule["limits"].get("max_captcha", 3)):
+            self.manual_intervention = False
             self.stop_flag.set(); self.pause_flag.set(); self.status["message"] = "达到验证码次数上限"; return
         while not self.stop_flag.is_set():
             await asyncio.sleep(2)
+            if page.is_closed():
+                self.manual_intervention = False
+                self.failure_message = "验证浏览器已关闭，请重新开始任务"
+                self.stop_flag.set(); self.pause_flag.set()
+                self.status.update(state="error", message=self.failure_message)
+                self.store.event(self.target_id, "error", self.failure_message)
+                return
             try:
+                # 验证组件可能在暂停后才创建或重载 iframe。
+                await self.set_operation_lock(page, False)
                 verified, _, _ = await self._captcha_verification(page, rule, before)
             except Exception:
                 verified = False  # 页面导航中，等待页面稳定后再判断
             if verified:
+                self.manual_intervention = False
                 await self.set_operation_lock(page, True)
                 if browser_mode == "auto": await self.set_window_state(page, "minimized")
                 self.resume(); return
@@ -540,10 +578,15 @@ class TargetRunner:
         await page.evaluate(OPERATION_LOCK_SCRIPT)
 
     async def set_operation_lock(self, page, locked):
-        try:
-            await page.evaluate("locked => { window.__collectorOperationLocked = locked; }", locked)
-        except Exception:
-            pass
+        # 初始化脚本会在主文档和每个 iframe 中分别安装操作锁。
+        # 验证码常在 iframe 内，只解锁主页面会让输入框仍然无法点击。
+        for frame in page.frames:
+            try:
+                await frame.evaluate(
+                    "locked => { window.__collectorOperationLocked = locked; }", locked)
+            except Exception:
+                # 导航期间框架可能被替换，人工等待循环会再次同步锁状态。
+                pass
 
     async def set_window_state(self, page, state):
         try:
@@ -660,6 +703,7 @@ class TargetRunner:
                                 except Exception as exc:
                                     self.store.event(self.target_id, "warning", f"登录状态载入失败：{exc}")
                             page = context.pages[0] if context.pages else await context.new_page()
+                            self.active_page = page
                             await self.install_operation_lock(context, page)
                             if browser_mode == "auto": await self.set_window_state(page, "minimized")
                             session_key = next_key
@@ -668,7 +712,9 @@ class TargetRunner:
                         await self.collect_board(page, board, rule, started)
                 finally:
                     await self._close_active_browser()
-            if self.condition_completed:
+            if self.failure_message:
+                self.status.update(state="error", message=self.failure_message)
+            elif self.condition_completed:
                 self.status.update(state="completed")
             else:
                 self.status.update(state="stopped" if self.stop_flag.is_set() else "completed",
@@ -682,6 +728,8 @@ class TargetRunner:
         finally:
             self.loop = None
             self.active_context = self.active_browser = None
+            self.active_page = None
+            self.manual_intervention = False
 
     async def collect_board(self, page, board, rule, started):
         url, empty = board["url"], 0
