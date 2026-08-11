@@ -189,7 +189,6 @@ def delete_target(target_id: str):
 @app.post("/api/targets/{target_id}/actions/{action}")
 def action(target_id: str, action: str):
     if action == "start": return manager.start(target_id)
-    if action == "restart-clear": return manager.restart_clear(target_id)
     if action not in ("pause", "resume", "stop"): raise HTTPException(400)
     return manager.action(target_id, action)
 

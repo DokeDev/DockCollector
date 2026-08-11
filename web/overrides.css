@@ -1,6 +1,32 @@
 .board { grid-template-columns: 22px 130px minmax(260px, 1fr) 210px 70px; }
 .actions { flex-wrap: wrap; justify-content: flex-end; }
+.task-controls { display: inline-flex; align-items: stretch; }
+.task-controls button { min-width: 76px; border-radius: 0; margin-left: -1px; padding-left: 12px; padding-right: 12px; }
+.task-controls button:first-child { margin-left: 0; border-radius: 9px 0 0 9px; }
+.task-controls button:last-child { border-radius: 0 9px 9px 0; }
+.task-controls button:disabled { cursor: not-allowed; opacity: .48; }
+.target-shell { border-radius: 10px; overflow: hidden; }
+.target-shell .target { width: 100%; border-radius: 10px; }
+.target-shell.active { background: #1d382d; }
+.target-shell.active .target { border-radius: 10px 10px 0 0; padding-bottom: 9px; }
+.target-actions { display: flex; gap: 6px; padding: 0 10px 10px; }
+.target-actions button { flex: 1; padding: 5px 7px; border-color: #355447; border-radius: 6px; background: #29483b; color: #c5d7ce; font-size: 11px; }
+.target-actions button:hover { border-color: #6d8d7e; }
+.target-actions .delete { color: #ffaaa3; }
 @media (max-width: 900px) {
   .board { grid-template-columns: 22px 1fr; }
   .board input, .board button { grid-column: 2; }
+}
+.aside-foot a {
+  display: block;
+  padding: 9px 11px;
+  border: 1px solid #355447;
+  border-radius: 8px;
+  color: #c5d7ce;
+  text-align: center;
+  text-decoration: none;
+}
+.aside-foot a:hover {
+  border-color: #6d8d7e;
+  color: #fff;
 }

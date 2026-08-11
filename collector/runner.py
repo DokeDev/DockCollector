@@ -59,6 +59,9 @@ class TargetRunner:
                        "captcha": 0, "message": "正在启动"}
         self.thread = None
         self.detail_baseline = []
+        self.loop = None
+        self.active_context = None
+        self.active_browser = None
 
     def start(self):
         self.thread = threading.Thread(target=lambda: asyncio.run(self.run()), daemon=True)
@@ -72,6 +75,26 @@ class TargetRunner:
 
     def stop(self):
         self.stop_flag.set(); self.pause_flag.set(); self.status.update(state="stopping", message="正在停止")
+        # 主动关闭当前 Chromium，不等待页面超时或访问间隔结束。
+        if self.loop and self.loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(self._close_active_browser(), self.loop)
+            except Exception:
+                pass
+
+    async def _close_active_browser(self):
+        context, browser = self.active_context, self.active_browser
+        self.active_context = self.active_browser = None
+        if context is not None:
+            try:
+                await context.close()
+            except Exception:
+                pass
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
     async def wait_gate(self):
         while not self.pause_flag.is_set() and not self.stop_flag.is_set():
@@ -586,6 +609,7 @@ class TargetRunner:
         return value
 
     async def run(self):
+        self.loop = asyncio.get_running_loop()
         if sys.platform != "win32" and os.environ.get("DOCK_USE_VENDOR", "1") != "0":
             sys.path.insert(0, str(self.root / ".vendor"))
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(self.root / ".browsers"))
@@ -626,6 +650,7 @@ class TargetRunner:
                                 context = await pw.chromium.launch_persistent_context(
                                     str(profile), headless=False, proxy=proxy_arg,
                                     viewport={"width": 1280, "height": 850})
+                            self.active_context, self.active_browser = context, browser
                             snapshot = profile / "登录状态.json"
                             if snapshot.exists():
                                 try:
@@ -642,18 +667,21 @@ class TargetRunner:
                             self.status["message"] = f"复用统一账号浏览器：{board.get('name', '未命名来源')}"
                         await self.collect_board(page, board, rule, started)
                 finally:
-                    if context is not None:
-                        await context.close()
-                    if browser is not None:
-                        await browser.close()
+                    await self._close_active_browser()
             if self.condition_completed:
                 self.status.update(state="completed")
             else:
                 self.status.update(state="stopped" if self.stop_flag.is_set() else "completed",
                                    message="已停止" if self.stop_flag.is_set() else "采集完成")
         except Exception as exc:
-            self.status.update(state="error", message=str(exc), errors=self.status["errors"] + 1)
-            self.store.event(self.target_id, "error", str(exc))
+            if self.stop_flag.is_set():
+                self.status.update(state="stopped", message="已停止，浏览器进程已结束")
+            else:
+                self.status.update(state="error", message=str(exc), errors=self.status["errors"] + 1)
+                self.store.event(self.target_id, "error", str(exc))
+        finally:
+            self.loop = None
+            self.active_context = self.active_browser = None
 
     async def collect_board(self, page, board, rule, started):
         url, empty = board["url"], 0
@@ -767,7 +795,6 @@ class TargetRunner:
 class RunnerManager:
     def __init__(self, root, store):
         self.root, self.store, self.runners = root, store, {}
-        self.restarting = set()
     def start(self, target_id):
         old = self.runners.get(target_id)
         if old and old.status["state"] not in ("completed", "stopped", "error"): return old.status
@@ -777,29 +804,5 @@ class RunnerManager:
         r = self.runners.get(target_id)
         if not r: return {"state": "idle", "message": "任务尚未启动"}
         getattr(r, action)(); return r.status
-    def restart_clear(self, target_id):
-        """停止现有线程，确认退出后清空结果并从第一个数据列表重新启动。"""
-        if target_id in self.restarting:
-            return {"state": "restarting", "message": "正在清空结果并重新开始"}
-        self.restarting.add(target_id)
-
-        def worker():
-            try:
-                old = self.runners.get(target_id)
-                if old and old.thread and old.thread.is_alive():
-                    old.stop()
-                    old.thread.join()  # 必须等旧任务完全退出，防止清空后又写入旧结果
-                deleted = self.store.clear_results(target_id)
-                self.store.event(target_id, "info", f"已清空 {deleted} 条结果，任务重新开始")
-                runner = TargetRunner(self.root, self.store, target_id)
-                self.runners[target_id] = runner
-                runner.start()
-            finally:
-                self.restarting.discard(target_id)
-
-        threading.Thread(target=worker, daemon=True).start()
-        return {"state": "restarting", "message": "正在停止旧任务并清空结果"}
     def status(self, target_id):
-        if target_id in self.restarting:
-            return {"state": "restarting", "message": "正在清空结果并重新开始"}
         r = self.runners.get(target_id); return r.status if r else {"state": "idle", "message": "尚未运行"}
