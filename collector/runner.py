@@ -126,14 +126,30 @@ class TargetRunner:
         while not self.pause_flag.is_set() and not self.stop_flag.is_set():
             await asyncio.sleep(1)
 
+    @staticmethod
+    def match_values(actual, item, present=True):
+        """按 OR/AND 组合多个判断值，并兼容旧版单 value 规则。"""
+        operator = item.get("operator", "contains")
+        if operator == "exists": return present
+        if operator == "missing": return not present
+        if operator == "empty": return present and not actual.strip()
+        values = item.get("values")
+        if not isinstance(values, list): values = [item.get("value", "")]
+        values = [str(value) for value in values if str(value)]
+        if not values: return False
+        checks = {"contains": lambda value: value in actual,
+                  "equals": lambda value: actual == value,
+                  "not_contains": lambda value: value not in actual}
+        check = checks.get(operator)
+        if not check: return False
+        hits = [check(value) for value in values]
+        return all(hits) if item.get("logic", "or").lower() == "and" else any(hits)
+
     async def matched_stop_rule(self, page, data, rule, phase):
         for item in rule.get("stop", {}).get("rules", []):
             if not item.get("enabled", True) or item.get("phase", "detail") != phase:
                 continue
-            kind, operator = item.get("kind", "field"), item.get("operator", "contains")
-            value, present, actual = str(item.get("value", "")), True, ""
-            if operator in {"contains", "equals", "not_contains"} and not value:
-                continue
+            kind, present, actual = item.get("kind", "field"), True, ""
             if kind == "field":
                 field_name = item.get("field", "")
                 present = field_name in (data or {})
@@ -144,9 +160,7 @@ class TargetRunner:
                 locator = page.locator(item.get("selector", "")).first
                 present = bool(item.get("selector")) and await locator.count() > 0
                 actual = (await locator.inner_text()).strip() if present else ""
-            matched = {"contains": value in actual, "equals": actual == value,
-                       "not_contains": value not in actual, "exists": present,
-                       "missing": not present, "empty": not actual.strip()}.get(operator, False)
+            matched = self.match_values(actual, item, present)
             if matched:
                 return item
         return None
@@ -764,21 +778,18 @@ class TargetRunner:
                         actual = (await node.inner_text()).strip() if present else ""
                     except Exception:
                         present, actual = False, ""
-                    value = str(condition.get("value", ""))
-                    operator = condition.get("operator", "contains")
-                    hit = {"contains": bool(value) and value in actual,
-                           "equals": actual == value,
-                           "not_contains": bool(value) and value not in actual,
-                           "exists": present,
-                           "missing": not present,
-                           "empty": present and not actual}.get(operator, False)
+                    hit = self.match_values(actual, condition, present)
                     if hit:
                         excluded = True
                         break
                 # 兼容尚未经过配置迁移的运行中旧规则。
                 if excluded or any(value and value in text for value in rule["list"].get("exclude_texts", [])):
                     self.status["skipped"] += 1; continue
-                required_text = str(rule["list"].get("required_text", ""))
+                required_values = rule["list"].get("required_texts")
+                if not isinstance(required_values, list):
+                    required_values = [rule["list"].get("required_text", "")]
+                required_values = [str(value) for value in required_values if str(value)]
+                required_logic = rule["list"].get("required_logic", "or").lower()
                 time_selector = str(rule["list"].get("time_selector", "")).strip()
                 if time_selector:
                     time_node = row.locator(time_selector).first
@@ -787,9 +798,11 @@ class TargetRunner:
                     list_time = (await time_node.inner_text()).strip()
                 else:
                     # 兼容尚未设置时间元素的旧规则；只保存包含值所在的文本行。
-                    list_time = next((x.strip() for x in text.splitlines()
-                                      if required_text and required_text in x), "")
-                if required_text and required_text not in list_time:
+                    list_time = next((line.strip() for line in text.splitlines()
+                                      if any(value in line for value in required_values)), "")
+                time_hits = [value in list_time for value in required_values]
+                time_matched = all(time_hits) if required_logic == "and" else any(time_hits)
+                if required_values and not time_matched:
                     self.status["skipped"] += 1; continue
                 link = row.locator(rule["list"]["link_selector"]).first
                 if not await link.count(): continue

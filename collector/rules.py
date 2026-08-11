@@ -95,6 +95,8 @@ def default_rule(target_id, folder, domain, adapter):
             "link_selector": "a.xst, a.s.xst, a[href*='thread-']",
             "time_selector": "",
             "required_text": "昨天",
+            "required_texts": ["昨天"],
+            "required_logic": "or",
             "exclude_texts": [],
             "exclude_rules": [],
             "next_selector": "a.nxt",
