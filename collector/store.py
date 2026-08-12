@@ -29,6 +29,10 @@ class Store:
         CREATE TABLE IF NOT EXISTS deleted_targets (
           id TEXT PRIMARY KEY, deleted_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS checkpoints (
+          target_id TEXT PRIMARY KEY, data_json TEXT NOT NULL,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         self.db.commit()
 
@@ -47,6 +51,7 @@ class Store:
                 return False
             self.db.execute("DELETE FROM results WHERE target_id=?", (target_id,))
             self.db.execute("DELETE FROM events WHERE target_id=?", (target_id,))
+            self.db.execute("DELETE FROM checkpoints WHERE target_id=?", (target_id,))
             self.db.execute("DELETE FROM targets WHERE id=?", (target_id,))
             self.db.execute("INSERT OR REPLACE INTO deleted_targets(id) VALUES(?)", (target_id,))
             self.db.commit()
@@ -101,6 +106,26 @@ class Store:
             self.db.execute("DELETE FROM results WHERE target_id=?", (target_id,))
             self.db.commit()
             return count
+
+    def save_checkpoint(self, target_id, data):
+        with self.lock:
+            self.db.execute("""INSERT INTO checkpoints(target_id,data_json) VALUES(?,?)
+              ON CONFLICT(target_id) DO UPDATE SET data_json=excluded.data_json,
+              updated_at=CURRENT_TIMESTAMP""",
+              (target_id, json.dumps(data, ensure_ascii=False)))
+            self.db.commit()
+
+    def checkpoint(self, target_id):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT data_json,updated_at FROM checkpoints WHERE target_id=?", (target_id,)).fetchone()
+            if not row: return None
+            return json.loads(row["data_json"]) | {"updated_at": row["updated_at"]}
+
+    def clear_checkpoint(self, target_id):
+        with self.lock:
+            self.db.execute("DELETE FROM checkpoints WHERE target_id=?", (target_id,))
+            self.db.commit()
 
     def event(self, target_id, level, message):
         with self.lock:

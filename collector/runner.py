@@ -65,6 +65,7 @@ class TargetRunner:
         self.active_page = None
         self.manual_intervention = False
         self.failure_message = ""
+        self.consecutive_captcha_failures = 0
 
     def start(self):
         self.thread = threading.Thread(target=lambda: asyncio.run(self.run()), daemon=True)
@@ -93,8 +94,12 @@ class TargetRunner:
             return
         await self.set_operation_lock(page, False)
         try:
-            await self.set_window_state(page, "normal")
-            await page.bring_to_front()
+            pages = [candidate for candidate in page.context.pages if not candidate.is_closed()]
+            # 验证组件可能打开新标签页/弹窗，优先唤醒最后创建的页面。
+            manual_page = pages[-1] if pages else page
+            await self.set_window_state(manual_page, "normal")
+            await manual_page.bring_to_front()
+            self.status.update(state="paused", message="验证窗口已唤醒，请在独立浏览器中完成验证码")
         except Exception:
             pass
 
@@ -299,6 +304,7 @@ class TargetRunner:
         if bool(cfg.get("auto", True)):
             await self.set_operation_lock(page, False)
             if await self._auto_solve(page, cfg, rule, before):
+                self.consecutive_captcha_failures = 0
                 await self.set_operation_lock(page, True)
                 self.status.update(message="验证码已自动处理")
                 return
@@ -309,9 +315,9 @@ class TargetRunner:
         self.pause(message)
         self.manual_intervention = True
         self.store.event(self.target_id, "warning", f"验证码暂停：{page.url}")
-        if self.status["captcha"] >= int(rule["limits"].get("max_captcha", 3)):
-            self.manual_intervention = False
-            self.stop_flag.set(); self.pause_flag.set(); self.status["message"] = "达到验证码次数上限"; return
+        # 自动打码失败后必须先给人工处理机会，不能按验证码检测总次数停止。
+        # 人工提交错误通常会刷新验证码图片，以图片变化记录一次“未通过”。
+        manual_image_hash = await self._captcha_image_hash(page)
         while not self.stop_flag.is_set():
             await asyncio.sleep(2)
             if page.is_closed():
@@ -329,9 +335,23 @@ class TargetRunner:
                 verified = False  # 页面导航中，等待页面稳定后再判断
             if verified:
                 self.manual_intervention = False
+                self.consecutive_captcha_failures = 0
                 await self.set_operation_lock(page, True)
                 if browser_mode == "auto": await self.set_window_state(page, "minimized")
                 self.resume(); return
+            current_hash = await self._captcha_image_hash(page)
+            if manual_image_hash and current_hash and current_hash != manual_image_hash:
+                manual_image_hash = current_hash
+                self.consecutive_captcha_failures += 1
+                limit = max(1, int(rule["limits"].get("max_captcha", 3)))
+                self.store.event(
+                    self.target_id, "warning",
+                    f"验证码未通过（连续 {self.consecutive_captcha_failures}/{limit} 次）")
+                if self.consecutive_captcha_failures >= limit:
+                    self.manual_intervention = False
+                    self.stop_flag.set(); self.pause_flag.set()
+                    self.status["message"] = f"连续 {limit} 次验证码未通过，任务已停止"
+                    return
 
     # ---------- ddddocr 自动打码 ----------
 
@@ -592,15 +612,22 @@ class TargetRunner:
         await page.evaluate(OPERATION_LOCK_SCRIPT)
 
     async def set_operation_lock(self, page, locked):
-        # 初始化脚本会在主文档和每个 iframe 中分别安装操作锁。
-        # 验证码常在 iframe 内，只解锁主页面会让输入框仍然无法点击。
-        for frame in page.frames:
-            try:
-                await frame.evaluate(
-                    "locked => { window.__collectorOperationLocked = locked; }", locked)
-            except Exception:
-                # 导航期间框架可能被替换，人工等待循环会再次同步锁状态。
-                pass
+        # 验证码可能位于 iframe、新标签页或弹窗。人工接管时必须同步
+        # 当前独立浏览器上下文中的全部页面与框架，不能只解锁采集页。
+        try:
+            pages = list(page.context.pages)
+        except Exception:
+            pages = [page]
+        for candidate in pages:
+            if candidate.is_closed():
+                continue
+            for frame in candidate.frames:
+                try:
+                    await frame.evaluate(
+                        "locked => { window.__collectorOperationLocked = locked; }", locked)
+                except Exception:
+                    # 导航期间页面/框架可能被替换，人工等待循环会再次同步。
+                    pass
 
     async def set_window_state(self, page, state):
         try:
@@ -672,6 +699,9 @@ class TargetRunner:
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(self.root / ".browsers"))
         from playwright.async_api import async_playwright
         target = self.store.target(self.target_id); rule = target["rule"]
+        checkpoint = self.store.checkpoint(self.target_id)
+        resume_board_id = checkpoint.get("board_id") if checkpoint else None
+        resume_reached = not bool(resume_board_id)
         profiles_root = self.root / rule["folder"] / "浏览器数据"
         profiles_root.mkdir(exist_ok=True)
         started = time.monotonic()
@@ -683,6 +713,10 @@ class TargetRunner:
                     for board in rule.get("boards", []):
                         if self.stop_flag.is_set(): break
                         if not board.get("enabled", True): continue
+                        if not resume_reached:
+                            if board.get("id") != resume_board_id:
+                                continue
+                            resume_reached = True
                         proxy_arg = await self.resolve_proxy(board, rule.get("proxy", {}))
                         profile = profiles_root / account_profile_id(rule, board)
                         profile.mkdir(parents=True, exist_ok=True)
@@ -723,16 +757,24 @@ class TargetRunner:
                             session_key = next_key
                         else:
                             self.status["message"] = f"复用统一账号浏览器：{board.get('name', '未命名来源')}"
-                        await self.collect_board(page, board, rule, started)
+                        board_checkpoint = checkpoint if checkpoint and board.get("id") == resume_board_id else None
+                        if board_checkpoint:
+                            self.status["message"] = (f"从断点继续：{board.get('name', '未命名')} · "
+                                                      f"第 {board_checkpoint.get('page_no', 1)} 页")
+                        await self.collect_board(page, board, rule, started, board_checkpoint)
+                        checkpoint = None
                 finally:
                     await self._close_active_browser()
             if self.failure_message:
                 self.status.update(state="error", message=self.failure_message)
             elif self.condition_completed:
+                self.store.clear_checkpoint(self.target_id)
                 self.status.update(state="completed")
+            elif self.stop_flag.is_set():
+                self.status.update(state="stopped", message="已停止，断点已保存")
             else:
-                self.status.update(state="stopped" if self.stop_flag.is_set() else "completed",
-                                   message="已停止" if self.stop_flag.is_set() else "采集完成")
+                self.store.clear_checkpoint(self.target_id)
+                self.status.update(state="completed", message="采集完成")
         except Exception as exc:
             if self.stop_flag.is_set():
                 self.status.update(state="stopped", message="已停止，浏览器进程已结束")
@@ -745,19 +787,35 @@ class TargetRunner:
             self.active_page = None
             self.manual_intervention = False
 
-    async def collect_board(self, page, board, rule, started):
-        url, empty = board["url"], 0
+    async def collect_board(self, page, board, rule, started, checkpoint=None):
+        start_page = max(1, int((checkpoint or {}).get("page_no", 1)))
+        url, empty = (checkpoint or {}).get("url") or board["url"], 0
         limits, freq = rule["limits"], rule["frequency"]
         pagination_mode = rule.get("list", {}).get("pagination_mode", "next")
-        for page_no in range(1, int(limits["max_list_pages"]) + 1):
+        if checkpoint and pagination_mode == "scroll":
+            # 瀑布流无法直接打开某一批；重新加载并滚动到保存的批次，
+            # 期间已保存详情仍由 URL 去重。
+            url = board["url"]
+            await page.goto(url, wait_until="domcontentloaded",
+                            timeout=int(freq["timeout_seconds"] * 1000))
+            await self.handle_captcha(page, rule); await self.wait_gate()
+            for _ in range(1, start_page):
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(float(freq["list_seconds"]))
+        first_iteration = True
+        for page_no in range(start_page, int(limits["max_list_pages"]) + 1):
             if self.stop_flag.is_set(): return
             if (time.monotonic() - started) / 60 >= float(limits["max_minutes"]):
                 self.stop_flag.set(); self.status["message"] = "达到最长运行时间"; return
             await self.wait_gate()
+            self.store.save_checkpoint(self.target_id, {
+                "board_id": board.get("id"), "board_name": board.get("name", ""),
+                "page_no": page_no, "url": url, "pagination_mode": pagination_mode})
             self.status.update(board=board["name"], url=url, message=f"读取列表第 {page_no} 页")
-            if page_no == 1 or pagination_mode != "scroll":
+            if pagination_mode != "scroll" or (first_iteration and not checkpoint):
                 await page.goto(url, wait_until="domcontentloaded", timeout=int(freq["timeout_seconds"] * 1000))
                 await self.handle_captcha(page, rule); await self.wait_gate()
+            first_iteration = False
             page_text = await page.locator("body").inner_text()
             stop_rule = await self.matched_stop_rule(page, None, rule, "list")
             if stop_rule:
@@ -856,14 +914,20 @@ class TargetRunner:
 class RunnerManager:
     def __init__(self, root, store):
         self.root, self.store, self.runners = root, store, {}
-    def start(self, target_id):
+    def start(self, target_id, restart=False):
         old = self.runners.get(target_id)
         if old and old.status["state"] not in ("completed", "stopped", "error"): return old.status
+        if restart: self.store.clear_checkpoint(target_id)
         runner = TargetRunner(self.root, self.store, target_id); self.runners[target_id] = runner; runner.start()
-        return runner.status
+        return self.status(target_id)
     def action(self, target_id, action):
         r = self.runners.get(target_id)
         if not r: return {"state": "idle", "message": "任务尚未启动"}
         getattr(r, action)(); return r.status
     def status(self, target_id):
-        r = self.runners.get(target_id); return r.status if r else {"state": "idle", "message": "尚未运行"}
+        r = self.runners.get(target_id)
+        status = dict(r.status) if r else {"state": "idle", "message": "尚未运行"}
+        checkpoint = self.store.checkpoint(target_id)
+        status["has_checkpoint"] = bool(checkpoint)
+        if checkpoint: status["checkpoint"] = checkpoint
+        return status

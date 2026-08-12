@@ -6,10 +6,10 @@
     <div class="aside-foot"><a href="/help.html" target="_blank">配置说明</a></div>
   </aside>
   <main><header><div><p class="eyebrow">采集目标 / <span id="crumb">—</span></p><h1 id="title">正在载入…</h1></div>
-    <div class="actions"><button id="loginBtn">账号/代理</button><button id="ruleBtn" title="导出当前目标的完整采集规则文件">导出规则</button><button id="saveBtn" title="保存页面中修改的全部设置">保存设置</button><div class="task-controls" role="group" aria-label="任务控制"><button class="primary" id="startBtn" title="开始任务">▶ 开始</button><button id="pauseBtn" title="暂停或继续任务">Ⅱ 暂停</button><button class="danger" id="stopBtn" title="停止任务并关闭浏览器进程">■ 停止</button></div></div></header>
+    <div class="actions"><button id="loginBtn">账号/代理</button><button id="ruleBtn" title="导出当前目标的完整采集规则文件">导出规则</button><button id="saveBtn" title="保存页面中修改的全部设置">保存设置</button><div class="task-controls" role="group" aria-label="任务控制"><button class="primary" id="startBtn" title="开始或从断点继续任务">▶ 开始</button><button id="restartBtn" title="从第一个数据列表重新扫描，已有结果仍会去重">↻ 重扫</button><button id="pauseBtn" title="暂停或继续任务">Ⅱ 暂停</button><button class="danger" id="stopBtn" title="停止任务、保存断点并关闭浏览器进程">■ 停止</button></div></div></header>
     <section class="status-strip"><div><small>运行状态</small><strong id="state">空闲</strong></div><div><small>列表页</small><strong id="pages">0</strong></div><div><small>已打开</small><strong id="opened">0</strong></div><div><small>已保存</small><strong id="saved">0</strong></div><div><small>验证码</small><strong id="captcha">0</strong></div><div class="current"><small>当前动作</small><strong id="message">尚未运行</strong></div></section>
     <nav id="tabs"><button class="active" data-tab="boards">数据列表</button><button data-tab="filter">列表筛选</button><button data-tab="fields">字段提取</button><button data-tab="limits">频率与结束</button><button data-tab="browser">运行模式</button><button data-tab="proxy">代理和打码</button><button data-tab="results">采集结果</button></nav>
     <div id="panel" class="panel"></div>
   </main>
 </div><dialog id="dialog"><div class="dialog-head"><h2>样例验证结果</h2><button onclick="dialog.close()">×</button></div><div id="dialogBody"></div></dialog>
-<script src="/app.js?v=20260811-50"></script></body></html>
+<script src="/app.js?v=20260812-2"></script></body></html>
