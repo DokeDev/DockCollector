@@ -14,7 +14,7 @@ import io
 import re
 import struct
 import threading
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 _lock = threading.Lock()
 _solver = None
@@ -49,17 +49,55 @@ class CaptchaSolver:
             text = self.ocr.classification(image_bytes)
         return (text or "").strip()
 
-    def solve_best(self, image_bytes):
-        """智能识别：普通 OCR → 算术计算；识别文本可疑（含非字母数字或为空）
-        时启用旋转字符增强。返回最佳识别结果。"""
-        text = self.solve_char(image_bytes)
-        math = self.compute_math(text)
-        if math is not None:
-            return math
-        if text and re.fullmatch(r"[0-9A-Za-z]+", text):
-            return text
+    @staticmethod
+    def image_quality(image_bytes):
+        """返回 (是否含有效视觉内容, 宽, 高, 灰度跨度)。"""
+        try:
+            img = Image.open(io.BytesIO(image_bytes)).convert("L")
+            extrema = img.getextrema()
+            spread = int(extrema[1]) - int(extrema[0])
+            histogram = img.histogram()
+            total = max(1, sum(histogram))
+            dominant = max(histogram) / total
+            valid = img.width >= 30 and img.height >= 15 and spread >= 18 and dominant < .985
+            return valid, img.width, img.height, spread
+        except Exception:
+            return False, 0, 0, 0
+
+    def solve_best(self, image_bytes, max_variants=5):
+        """只使用同一张图片，在本地尝试多种预处理，不刷新或再次请求网站。"""
+        variants = self._preprocess_variants(image_bytes)[:max(1, int(max_variants))]
+        outputs = []
+        for variant in variants:
+            text = self.solve_char(variant)
+            if not text: continue
+            math = self.compute_math(text)
+            if math is not None: return math
+            cleaned = re.sub(r"\s+", "", text)
+            if re.fullmatch(r"[0-9A-Za-z]+", cleaned): outputs.append(cleaned)
+        if outputs:
+            # 多个本地版本结果一致时优先；相同票数优先原图/较早方案。
+            return max(dict.fromkeys(outputs), key=lambda value: (outputs.count(value), -outputs.index(value)))
         rotated = self.solve_rotated(image_bytes)
-        return rotated or text
+        return rotated or ""
+
+    @staticmethod
+    def _preprocess_variants(image_bytes):
+        """生成原图、放大、对比度、灰度和二值化版本；全程仅在本地内存处理。"""
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        white = Image.new("RGBA", img.size, "white")
+        white.alpha_composite(img)
+        rgb = white.convert("RGB")
+        scale = max(2, min(4, 160 // max(1, rgb.width)))
+        enlarged = rgb.resize((rgb.width * scale, rgb.height * scale), Image.Resampling.LANCZOS)
+        gray = ImageOps.autocontrast(enlarged.convert("L"))
+        contrast = ImageEnhance.Contrast(enlarged).enhance(2.0).filter(ImageFilter.SHARPEN)
+        binary = gray.point(lambda value: 255 if value > 155 else 0).convert("RGB")
+        sources = [rgb, enlarged, contrast, gray.convert("RGB"), binary]
+        result = []
+        for source in sources:
+            buf = io.BytesIO(); source.save(buf, "PNG"); result.append(buf.getvalue())
+        return result
 
     @staticmethod
     def compute_math(text):

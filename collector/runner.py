@@ -7,6 +7,7 @@ import random
 import sys
 import threading
 import time
+import base64
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
@@ -31,6 +32,25 @@ OPERATION_LOCK_SCRIPT = r"""
     event.stopImmediatePropagation();
   };
   blocked.forEach(name => window.addEventListener(name, guard, {capture:true, passive:false}));
+})();
+"""
+
+CAPTCHA_ATTEMPT_SCRIPT = r"""
+(() => {
+  if (window.__collectorCaptchaAttemptInstalled) return;
+  window.__collectorCaptchaAttemptInstalled = true;
+  const mark = event => {
+    if (!event.isTrusted) return;
+    const next = Number(sessionStorage.getItem('__collectorCaptchaAttempts') || 0) + 1;
+    sessionStorage.setItem('__collectorCaptchaAttempts', String(next));
+  };
+  addEventListener('submit', mark, true);
+  addEventListener('click', event => {
+    if (event.target.closest('button, input[type="submit"], input[type="button"], [role="button"]')) mark(event);
+  }, true);
+  addEventListener('keydown', event => {
+    if (event.key === 'Enter' && event.target.closest('input, textarea')) mark(event);
+  }, true);
 })();
 """
 
@@ -97,7 +117,7 @@ class TargetRunner:
             pages = [candidate for candidate in page.context.pages if not candidate.is_closed()]
             # 验证组件可能打开新标签页/弹窗，优先唤醒最后创建的页面。
             manual_page = pages[-1] if pages else page
-            await self.set_window_state(manual_page, "normal")
+            await self.set_window_state(manual_page, "normal", width=1100, height=760)
             await manual_page.bring_to_front()
             self.status.update(state="paused", message="验证窗口已唤醒，请在独立浏览器中完成验证码")
         except Exception:
@@ -308,18 +328,22 @@ class TargetRunner:
                 await self.set_operation_lock(page, True)
                 self.status.update(message="验证码已自动处理")
                 return
-        if browser_mode == "auto": await self.set_window_state(page, "normal")
+        if browser_mode != "silent":
+            await self.set_window_state(page, "normal", width=1100, height=760)
+            try: await page.bring_to_front()
+            except Exception: pass
         await self.set_operation_lock(page, False)
         message = ("检测到验证码；后台静默模式无法显示页面，请停止后切换运行模式"
                    if browser_mode == "silent" else "检测到验证码，请在浏览器中手动完成")
         self.pause(message)
         self.manual_intervention = True
         self.store.event(self.target_id, "warning", f"验证码暂停：{page.url}")
-        # 自动打码失败后必须先给人工处理机会，不能按验证码检测总次数停止。
-        # 人工提交错误通常会刷新验证码图片，以图片变化记录一次“未通过”。
-        manual_image_hash = await self._captcha_image_hash(page)
+        # 自动打码失败后必须先给人工处理机会。只有捕获到真实人工提交动作且
+        # 验证仍存在时才累计失败，验证码图片自行刷新不能算作未通过。
+        await self.install_captcha_attempt_monitor(page)
+        manual_attempts = await self.captcha_attempt_count(page)
         while not self.stop_flag.is_set():
-            await asyncio.sleep(2)
+            await asyncio.sleep(.5)
             if page.is_closed():
                 self.manual_intervention = False
                 self.failure_message = "验证浏览器已关闭，请重新开始任务"
@@ -330,6 +354,7 @@ class TargetRunner:
             try:
                 # 验证组件可能在暂停后才创建或重载 iframe。
                 await self.set_operation_lock(page, False)
+                await self.install_captcha_attempt_monitor(page)
                 verified, _, _ = await self._captcha_verification(page, rule, before)
             except Exception:
                 verified = False  # 页面导航中，等待页面稳定后再判断
@@ -339,9 +364,9 @@ class TargetRunner:
                 await self.set_operation_lock(page, True)
                 if browser_mode == "auto": await self.set_window_state(page, "minimized")
                 self.resume(); return
-            current_hash = await self._captcha_image_hash(page)
-            if manual_image_hash and current_hash and current_hash != manual_image_hash:
-                manual_image_hash = current_hash
+            current_attempts = await self.captcha_attempt_count(page)
+            if current_attempts > manual_attempts:
+                manual_attempts = current_attempts
                 self.consecutive_captcha_failures += 1
                 limit = max(1, int(rule["limits"].get("max_captcha", 3)))
                 self.store.event(
@@ -356,36 +381,29 @@ class TargetRunner:
     # ---------- ddddocr 自动打码 ----------
 
     async def _auto_solve(self, page, cfg, rule=None, before=None):
-        """尝试用 ddddocr 自动完成验证码，成功返回 True，失败回退人工。"""
+        """单次取图、本地多方案识别、最多提交一次；失败直接回退人工。"""
         try:
             solver = await asyncio.to_thread(get_captcha_solver)
             if not solver.available:
                 self.store.event(self.target_id, "warning", f"自动打码不可用：{solver.error}")
                 return False
+            if self.stop_flag.is_set(): return False
+            self.status.update(message="正在单次获取验证码并进行本地识别")
             try:
-                max_tries = max(1, int(cfg.get("max_auto_tries", 3)))
-            except (TypeError, ValueError):
-                max_tries = 3
-            for attempt in range(1, max_tries + 1):
-                if self.stop_flag.is_set(): return False
-                self.status.update(message=f"正在自动识别验证码（{attempt}/{max_tries}）")
-                try:
-                    handled = await self._auto_solve_once(page, cfg, solver)
-                except Exception as exc:
-                    handled = False
-                    self.store.event(self.target_id, "warning", f"自动打码异常：{exc}")
-                if handled:
-                    await asyncio.sleep(2)
-                    verified, score, reasons = await self._captcha_verification(
-                        page, rule or {"captcha": cfg}, before or {})
-                    if verified:
-                        detail = "、".join(reasons) or "验证组件消失"
-                        self.store.event(self.target_id, "info",
-                                         f"验证码自动打码成功（尝试 {attempt} 次，可信度 {score}：{detail}）")
-                        return True
-                await self._refresh_captcha(page, cfg)
-                await asyncio.sleep(1)
-            self.store.event(self.target_id, "warning", f"自动打码失败（{max_tries} 次），回退人工处理")
+                handled = await self._auto_solve_once(page, cfg, solver)
+            except Exception as exc:
+                handled = False
+                self.store.event(self.target_id, "warning", f"自动打码异常：{exc}")
+            if handled:
+                await asyncio.sleep(2)
+                verified, score, reasons = await self._captcha_verification(
+                    page, rule or {"captcha": cfg}, before or {})
+                if verified:
+                    detail = "、".join(reasons) or "验证组件消失"
+                    self.store.event(self.target_id, "info",
+                                     f"验证码自动打码成功（单次提交，可信度 {score}：{detail}）")
+                    return True
+            self.store.event(self.target_id, "warning", "单次自动打码未通过，未刷新验证码，回退人工处理")
         except Exception as exc:
             self.store.event(self.target_id, "warning", f"自动打码加载失败：{exc}")
         return False
@@ -515,22 +533,29 @@ class TargetRunner:
         return True
 
     async def _solve_char_captcha(self, page, cfg, solver):
-        """Discuz 类字符验证码：识别 seccode 图片并填入输入框，随后提交表单。"""
-        img = page.locator(
-            "img[src*='seccode']:visible, img[src*='captcha']:visible, "
-            "img[id*='seccode']:visible, img[id*='captcha']:visible").first
-        if not await img.count():
+        """跨标签页/iframe 选择与输入框配对的验证码，单次截图并最多提交一次。"""
+        pair = await self._best_captcha_pair(page)
+        if pair is None:
             self.store.event(self.target_id, "warning", "自动打码未找到可见验证码图片")
             return False
-        inp = await self._captcha_input(page, img)
-        if inp is None:
-            self.store.event(self.target_id, "warning", "验证码图片已找到，但未找到可见且可编辑的输入框")
-            return False
+        frame, img, inp, width, height = pair
         await page.wait_for_timeout(300)
-        img_bytes = await img.screenshot()
-        text = await asyncio.to_thread(solver.solve_best, img_bytes)
+        img_bytes, source = await self._captcha_visual_bytes(frame, img, inp, solver)
+        if not img_bytes:
+            self.store.event(self.target_id, "warning",
+                             "已找到验证码输入框，但附近视觉元素均为空白，已回退人工且未提交")
+            return False
+        variants = max(1, min(5, int(cfg.get("max_auto_tries", 5))))
+        text = await asyncio.to_thread(solver.solve_best, img_bytes, variants)
         if not text:
-            self.store.event(self.target_id, "warning", "验证码图片已获取，但 OCR 未识别出内容")
+            debug_dir = self.root / self.store.target(self.target_id)["rule"]["folder"] / "验证码调试"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            _, actual_width, actual_height, spread = solver.image_quality(img_bytes)
+            debug_file = debug_dir / f"失败_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{actual_width}x{actual_height}.png"
+            debug_file.write_bytes(img_bytes)
+            self.store.event(self.target_id, "warning",
+                             f"OCR 未识别出内容（来源 {source}，图片 {actual_width}x{actual_height}，"
+                             f"灰度跨度 {spread}，失败截图已保存到本地验证码调试目录）")
             return False
         await inp.fill(text, timeout=5000)
         form = inp.locator("xpath=ancestor::form").first
@@ -549,6 +574,72 @@ class TargetRunner:
             return True
         await inp.press("Enter")
         return True
+
+    async def _captcha_visual_bytes(self, frame, image, inp, solver):
+        """只读取当前页面已有资源；空白占位图时查找真实 img/canvas/CSS 背景。"""
+        candidates = [(image, "匹配图片截图")]
+        form = inp.locator("xpath=ancestor::form").first
+        root = form if await form.count() else inp.locator(
+            "xpath=ancestor::*[self::div or self::td or self::section][1]")
+        if await root.count():
+            visuals = root.locator("img:visible, canvas:visible, [style*='background-image']:visible")
+            for index in range(min(await visuals.count(), 12)):
+                candidate = visuals.nth(index)
+                try:
+                    box = await candidate.bounding_box()
+                    if box and box["width"] >= 30 and box["height"] >= 15:
+                        candidates.append((candidate, f"验证容器视觉元素{index + 1}"))
+                except Exception:
+                    pass
+        seen = set()
+        for candidate, label in candidates:
+            try:
+                key = await candidate.evaluate("el => el.tagName + '|' + (el.currentSrc || el.src || getComputedStyle(el).backgroundImage || '')")
+                if key in seen: continue
+                seen.add(key)
+                # img 优先读取浏览器已经加载的原始资源，避免透明覆盖层截图为空白。
+                raw = await candidate.evaluate("""async el => {
+                  const src = el.currentSrc || el.src;
+                  if (!src || el.tagName !== 'IMG') return '';
+                  try {
+                    const blob = await (await fetch(src, {credentials:'include', cache:'force-cache'})).blob();
+                    return await new Promise(resolve => { const r=new FileReader(); r.onload=()=>resolve(String(r.result).split(',')[1]||''); r.onerror=()=>resolve(''); r.readAsDataURL(blob); });
+                  } catch (_) { return ''; }
+                }""")
+                if raw:
+                    data = base64.b64decode(raw)
+                    valid, _, _, _ = await asyncio.to_thread(solver.image_quality, data)
+                    if valid: return data, label + "原始资源"
+                data = await candidate.screenshot(animations="disabled", timeout=5000)
+                valid, _, _, _ = await asyncio.to_thread(solver.image_quality, data)
+                if valid: return data, label
+            except Exception:
+                continue
+        return b"", ""
+
+    async def _best_captcha_pair(self, page):
+        selector = ("img[src*='seccode']:visible, img[src*='captcha']:visible, "
+                    "img[src*='verify']:visible, img[id*='seccode']:visible, "
+                    "img[id*='captcha']:visible, img[id*='verify']:visible")
+        best = None
+        for candidate_page in page.context.pages:
+            if candidate_page.is_closed(): continue
+            for frame in candidate_page.frames:
+                images = frame.locator(selector)
+                for index in range(await images.count()):
+                    image = images.nth(index)
+                    try:
+                        box = await image.bounding_box()
+                        if not box or box["width"] < 30 or box["height"] < 15: continue
+                        inp = await self._captcha_input(frame, image)
+                        if inp is None: continue
+                        score = box["width"] * box["height"]
+                        if await image.locator("xpath=ancestor::form").count(): score += 100000
+                        if best is None or score > best[0]:
+                            best = (score, frame, image, inp, round(box["width"]), round(box["height"]))
+                    except Exception:
+                        continue
+        return None if best is None else best[1:]
 
     async def _captcha_input(self, page, image):
         """返回可见、可编辑的验证码输入框，排除 seccodehash 等隐藏状态字段。"""
@@ -611,6 +702,33 @@ class TargetRunner:
         await context.add_init_script(script=OPERATION_LOCK_SCRIPT)
         await page.evaluate(OPERATION_LOCK_SCRIPT)
 
+    async def install_captcha_attempt_monitor(self, page):
+        try:
+            pages = list(page.context.pages)
+        except Exception:
+            pages = [page]
+        for candidate in pages:
+            if candidate.is_closed(): continue
+            for frame in candidate.frames:
+                try: await frame.evaluate(CAPTCHA_ATTEMPT_SCRIPT)
+                except Exception: pass
+
+    async def captcha_attempt_count(self, page):
+        total = 0
+        try:
+            pages = list(page.context.pages)
+        except Exception:
+            pages = [page]
+        for candidate in pages:
+            if candidate.is_closed(): continue
+            for frame in candidate.frames:
+                try:
+                    total += int(await frame.evaluate(
+                        "Number(sessionStorage.getItem('__collectorCaptchaAttempts') || 0)"))
+                except Exception:
+                    pass
+        return total
+
     async def set_operation_lock(self, page, locked):
         # 验证码可能位于 iframe、新标签页或弹窗。人工接管时必须同步
         # 当前独立浏览器上下文中的全部页面与框架，不能只解锁采集页。
@@ -629,12 +747,17 @@ class TargetRunner:
                     # 导航期间页面/框架可能被替换，人工等待循环会再次同步。
                     pass
 
-    async def set_window_state(self, page, state):
+    async def set_window_state(self, page, state, width=None, height=None):
         try:
             session = await page.context.new_cdp_session(page)
             info = await session.send("Browser.getWindowForTarget")
+            bounds = {"windowState": state}
             await session.send("Browser.setWindowBounds", {
-                "windowId": info["windowId"], "bounds": {"windowState": state}})
+                "windowId": info["windowId"], "bounds": bounds})
+            if state == "normal" and width and height:
+                await session.send("Browser.setWindowBounds", {
+                    "windowId": info["windowId"],
+                    "bounds": {"left": 30, "top": 50, "width": width, "height": height}})
             await session.detach()
         except Exception:
             pass
