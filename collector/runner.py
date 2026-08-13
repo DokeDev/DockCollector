@@ -916,6 +916,7 @@ class RunnerManager:
         self.root, self.store, self.runners = root, store, {}
     def start(self, target_id, restart=False):
         old = self.runners.get(target_id)
+        self._finalize_dead_runner(old)
         if old and old.status["state"] not in ("completed", "stopped", "error"): return old.status
         if restart: self.store.clear_checkpoint(target_id)
         runner = TargetRunner(self.root, self.store, target_id); self.runners[target_id] = runner; runner.start()
@@ -923,9 +924,17 @@ class RunnerManager:
     def action(self, target_id, action):
         r = self.runners.get(target_id)
         if not r: return {"state": "idle", "message": "任务尚未启动"}
+        self._finalize_dead_runner(r)
         getattr(r, action)(); return r.status
+    @staticmethod
+    def _finalize_dead_runner(runner):
+        """浏览器已关闭且采集线程已退出时，修复遗留的 stopping 状态。"""
+        if (runner and runner.status.get("state") == "stopping" and runner.thread
+                and not runner.thread.is_alive()):
+            runner.status.update(state="stopped", message="已停止，断点已保存")
     def status(self, target_id):
         r = self.runners.get(target_id)
+        self._finalize_dead_runner(r)
         status = dict(r.status) if r else {"state": "idle", "message": "尚未运行"}
         checkpoint = self.store.checkpoint(target_id)
         status["has_checkpoint"] = bool(checkpoint)

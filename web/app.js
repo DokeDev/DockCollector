@@ -47,7 +47,7 @@ function addPickedField(){if(!picked)return;let name=prompt('字段名称，例�
 $('#saveBtn').onclick=async()=>{await api('/api/targets/'+current.id,{method:'PUT',body:JSON.stringify(current)});$('#saveBtn').textContent='已保存';setTimeout(()=>$('#saveBtn').textContent='保存设置',1200)}
 $('#ruleBtn').onclick=()=>{if(current)location.href=`/api/targets/${current.id}/rule.json`}
 $('#startBtn').onclick=async()=>{if(!current)return;await persist();updateStatus(await api(`/api/targets/${current.id}/actions/start`,{method:'POST'}))}
-$('#restartBtn').onclick=async()=>{if(!current)return;if(!confirm('确定从第一个数据列表重新扫描吗？已有结果不会清空，采集过的网址仍会跳过。'))return;await persist();updateStatus(await api(`/api/targets/${current.id}/actions/restart`,{method:'POST'}))}
+$('#restartBtn').onclick=async()=>{if(!current)return;if(!confirm('确定清除断点并从第一个数据列表重新开始吗？已有结果不会清空，采集过的网址不会再次进入。'))return;await persist();updateStatus(await api(`/api/targets/${current.id}/actions/restart`,{method:'POST'}))}
 $('#pauseBtn').onclick=async()=>{if(!current)return;let s=await api(`/api/targets/${current.id}/status`),action=s.state==='paused'?'resume':'pause';updateStatus(await api(`/api/targets/${current.id}/actions/${action}`,{method:'POST'}))}
 $('#stopBtn').onclick=async()=>{if(!current)return;if(!confirm('确定停止当前任务吗？已采集结果会保留。'))return;updateStatus(await api(`/api/targets/${current.id}/actions/stop`,{method:'POST'}))}
 function testProxy(){alert('保存配置后，启动任务会使用此固定代理。连通性与出口 IP 检测将在下一版加入。')}
